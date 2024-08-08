@@ -71,8 +71,7 @@ class LineGenerator:
             self.debug_info.append((p0, m0, r0_vec, p1, m1, r1_vec, normal))  # 保存调试信息
             print("Arc center not found")
             return
-
-
+        
         # Calculate the radius
         radius = np.linalg.norm(center - p0)
 
@@ -94,9 +93,7 @@ class LineGenerator:
                 + radius * np.sin(theta[i]) * cross_v0_normal
             )
             arc_points[i] = point
-
         self.segments.append((arc_points, p0, p1))
-
 
     def plot_segments(self):
         fig = plt.figure(figsize=(20, 16))
@@ -111,7 +108,7 @@ class LineGenerator:
             color = colors[i % len(colors)]  # 使用模运算确保不会超出列表范围
             ax.plot(points[:, 0], points[:, 1], points[:, 2], color=color, linewidth=2)
         
-        for p0, m0, r0_vec, p1, m1, r1_vec, normal in self.debug_info:
+        for p0, m0, r0_vec, p1, m1, r1_vec in self.debug_info:
             t = np.linspace(-1, 1, 100)
             line1 = p0 + np.outer(t, r0_vec)
             line2 = p1 + np.outer(t, r1_vec)
@@ -121,13 +118,6 @@ class LineGenerator:
             ax.plot(line4[:, 0], line4[:, 1], line4[:, 2], 'g--')
             ax.plot(line1[:, 0], line1[:, 1], line1[:, 2], 'r--')
             ax.plot(line2[:, 0], line2[:, 1], line2[:, 2], 'g--')
-            # 绘制法平面
-            # d = -np.dot(normal, p0)
-            # xx, yy = np.meshgrid(np.linspace(-1, 1, 10), np.linspace(-1, 1, 10))
-            # zz = (-normal[0] * xx - normal[1] * yy - d) * 1. / normal[2]
-            # ax.plot_surface(xx, yy, zz, color='gray', alpha=0.5)
-            # # 绘制法向量
-            # ax.quiver(p0[0], p0[1], p0[2], normal[0], normal[1], normal[2], length=0.5, color='k')
 
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
