@@ -1,45 +1,79 @@
-import numpy as np
+def plot_manipulator(self):
+        init_pos = np.array([0, 0, 0, 1])
+        init_ori = np.array([0, 0, 1])
+        lg = LineGenerator()
 
-def find_intersection(p1, d1, p2, d2):
-    # 转换为numpy数组
-    p1 = np.array(p1, dtype=np.float64)
-    d1 = np.array(d1, dtype=np.float64)
-    p2 = np.array(p2, dtype=np.float64)
-    d2 = np.array(d2, dtype=np.float64)
+        if self.mode == 1:
+            T = self.get_trans_mat(self.theta_2, self.L2, self.delta_2)
+            end_pos = T @ init_pos
+            end_ori = T[:3, :3] @ init_ori
+            self.pose = np.block([end_pos[:3], end_ori])
+            self.w_P_2b_2e = T[:3, 3]
+            self.w_R_2b = self.get_wR()
 
-    # 计算两个方向向量的叉乘
-    cross_d1_d2 = np.cross(d1, d2)
-    norm_cross_d1_d2 = np.linalg.norm(cross_d1_d2)
+            lg.add_arc(init_pos[:3], end_pos[:3], init_ori, end_ori)
 
-    # 如果叉乘的范数接近于零，说明射线平行或共线
-    if norm_cross_d1_d2 < 1e-8:
-        print("射线平行或共线，无交点")
-        return None
+        elif self.mode == 2:
+            T1 = np.eye(4)
+            T1[2, 3] = self.Lr
+            T2 = self.get_trans_mat(self.theta_2, self.L2, self.delta_2)
 
-    # 计算线性方程组的右侧常数项
-    diff_p = p2 - p1
+            base2_pos = T1 @ init_pos
+            base2_ori = T1[:3, :3] @ init_ori
+            end2_pos = T1 @ T2 @ init_pos 
+            end2_ori = T1[:3, :3] @ T2[:3, :3] @ init_ori
+            self.pose = np.block([end2_pos[:3], end2_ori])
+            self.w_P_2b_2e = T2[:3, 3]
+            self.w_R_2b = self.get_wR()
 
-    # 计算方程组的解，即参数 t 和 s
-    t = np.linalg.det([diff_p, d2, cross_d1_d2]) / norm_cross_d1_d2**2
-    s = np.linalg.det([diff_p, d1, cross_d1_d2]) / norm_cross_d1_d2**2
+            lg.add_line(init_pos[:3], base2_pos[:3])
+            lg.add_arc(base2_pos[:3], end2_pos[:3], base2_ori, end2_ori)
 
-    # 计算交点坐标
-    intersection1 = p1 + t * d1
-    intersection2 = p2 + s * d2
+        elif self.mode == 3:
+            T1 = self.get_trans_mat(self.theta_1, self.L1, self.delta_1)
+            T2 = np.eye(4)
+            T2[2, 3] = self.Lr
+            T3 = self.get_trans_mat(self.theta_2, self.L2, self.delta_2)
 
-    # 验证交点是否相同（即射线相交）
-    if np.allclose(intersection1, intersection2):
-        return intersection1
-    else:
-        print("射线不相交")
-        return None
+            end1_pos = T1 @ init_pos
+            end1_ori = T1[:3, :3] @ init_ori
+            base2_pos = T1 @ T2 @ init_pos
+            base2_ori = T1[:3, :3] @ T2[:3, :3] @ init_ori
+            end2_pos = T1 @ T2 @ T3 @ init_pos
+            end2_ori = T1[:3, :3] @ T2[:3, :3] @ T3[:3, :3] @ init_ori
+            self.pose = np.block([end2_pos[:3], end2_ori])
+            self.w_R_1b = self.get_wR()
+            self.w_R_2b = self.w_R_1b @ T1[:3, :3]
+            self.b1_P_1e_2e = end2_pos[:3] - end1_pos[:3]
+            self.w_P_1b_2e = end2_pos[:3] - init_pos[:3]
 
-# 示例用法
-p1 = [0, 0, 0]
-d1 = [1, 1, 1]
-p2 = [1, 0, 0]
-d2 = [0, 1, 1]
+            lg.add_arc(init_pos[:3], end1_pos[:3], init_ori, end1_ori)
+            lg.add_line(end1_pos[:3], base2_pos[:3])
+            lg.add_arc(base2_pos[:3], end2_pos[:3], base2_ori, end2_ori)
+        
+        elif self.mode == 4:
+            T1 = np.eye(4)
+            T1[2, 3] = self.Ls
+            T2 = self.get_trans_mat(self.theta_1, self.L1, self.delta_1)
+            T3 = np.eye(4)
+            T3[2, 3] = self.Lr
+            T4 = self.get_trans_mat(self.theta_2, self.L2, self.delta_2)
 
-intersection = find_intersection(p1, d1, p2, d2)
-if intersection is not None:
-    print("射线的交点为：", intersection)
+            base1_pos = T1 @ init_pos
+            base1_ori = T1[:3, :3] @ init_ori
+            end1_pos = T1 @ T2 @ init_pos
+            end1_ori = T1[:3, :3] @ T2[:3, :3] @ init_ori
+            base2_pos = T1 @ T2 @ T3 @ init_pos
+            base2_ori = T1[:3, :3] @ T2[:3, :3] @ T3[:3, :3] @ init_ori
+            end2_pos = T1 @ T2 @ T3 @ T4 @ init_pos
+            end2_ori = T1[:3, :3] @ T2[:3, :3] @ T3[:3, :3] @ T4[:3, :3] @ init_ori
+            self.pose = np.block([end2_pos[:3], end2_ori])
+            self.w_R_1b = self.get_wR()
+            self.w_R_2b = self.w_R_1b @ T2[:3, :3]
+            self.b1_P_1e_2e = end2_pos[:3] - end1_pos[:3]
+            self.w_P_1b_2e = end2_pos[:3] - base1_pos[:3]
+
+            lg.add_line(init_pos[:3], base1_pos[:3])
+            lg.add_arc(base1_pos[:3], end1_pos[:3], base1_ori, end1_ori)
+            lg.add_line(end1_pos[:3], base2_pos[:3])
+            lg.add_arc(base2_pos[:3], end2_pos[:3], base2_ori, end2_ori)

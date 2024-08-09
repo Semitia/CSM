@@ -58,6 +58,13 @@ class LineGenerator:
         m0 = np.array(m0, dtype=np.float64)
         m1 = np.array(m1, dtype=np.float64)
 
+        # Check if the two directions are parallel
+        if np.allclose(np.cross(m0, m1), 0):
+            print("Directions are parallel")
+            # Add a straight line segment instead
+            self.add_line(p0, p1, num_points)
+            return
+
         # Calculate normal vector of the plane
         normal = np.cross(m0, m1)
         normal /= np.linalg.norm(normal)
@@ -68,7 +75,7 @@ class LineGenerator:
         center = find_intersection(p0, r0_vec, p1, r1_vec)
 
         if center is None:
-            self.debug_info.append((p0, m0, r0_vec, p1, m1, r1_vec, normal))  # 保存调试信息
+            self.debug_info.append((p0, m0, r0_vec, p1, m1, r1_vec))  # 保存调试信息
             print("Arc center not found")
             return
         
