@@ -50,7 +50,6 @@ class LineGenerator:
         line_points = np.outer(1 - t, p0) + np.outer(t, p1)
         self.segments.append((line_points, p0, p1))
     
-
     def add_arc(self, p0, p1, m0, m1, num_points=100):
         # Ensure inputs are float arrays
         p0 = np.array(p0, dtype=np.float64)

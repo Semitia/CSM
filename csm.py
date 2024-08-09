@@ -1,6 +1,7 @@
 import numpy as np
 from LineGenerator import LineGenerator
-from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 def skew_symmetric_matrix(p):
     return np.array([
@@ -225,20 +226,17 @@ class CSM:
                         [0, 0, 1]])
         return w
 
-    def plot_manipulator(self):
+    def update(self):
         init_pos = np.array([0, 0, 0, 1])
         init_ori = np.array([0, 0, 1])
-        lg = LineGenerator()
 
         if self.mode == 1:
             T = self.get_trans_mat(self.theta_2, self.L2, self.delta_2)
-            self.end_pos = T @ init_pos
-            self.end_ori = T[:3, :3] @ init_ori
-            self.pose = np.block([self.end_pos[:3], self.end_ori])
+            self.end2_pos = T @ init_pos
+            self.end2_ori = T[:3, :3] @ init_ori
+            self.pose = np.block([self.end2_pos[:3], self.end2_ori])
             self.w_P_2b_2e = T[:3, 3]
             self.w_R_2b = self.get_wR()
-
-            lg.add_arc(init_pos[:3], self.end_pos[:3], init_ori, self.end_ori)
 
         elif self.mode == 2:
             T1 = np.eye(4)
@@ -252,9 +250,6 @@ class CSM:
             self.pose = np.block([self.end2_pos[:3], self.end2_ori])
             self.w_P_2b_2e = T2[:3, 3]
             self.w_R_2b = self.get_wR()
-
-            lg.add_line(init_pos[:3], self.base2_pos[:3])
-            lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
 
         elif self.mode == 3:
             T1 = self.get_trans_mat(self.theta_1, self.L1, self.delta_1)
@@ -274,10 +269,6 @@ class CSM:
             self.b1_P_1e_2e = self.end2_pos[:3] - self.end1_pos[:3]
             self.w_P_1b_2e = self.end2_pos[:3] - init_pos[:3]
 
-            lg.add_arc(init_pos[:3], self.end1_pos[:3], init_ori, self.end1_ori)
-            lg.add_line(self.end1_pos[:3], self.base2_pos[:3])
-            lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
-        
         elif self.mode == 4:
             T1 = np.eye(4)
             T1[2, 3] = self.Ls
@@ -286,27 +277,83 @@ class CSM:
             T3[2, 3] = self.Lr
             T4 = self.get_trans_mat(self.theta_2, self.L2, self.delta_2)
 
-            base1_pos = T1 @ init_pos
-            base1_ori = T1[:3, :3] @ init_ori
-            end1_pos = T1 @ T2 @ init_pos
-            end1_ori = T1[:3, :3] @ T2[:3, :3] @ init_ori
-            base2_pos = T1 @ T2 @ T3 @ init_pos
-            base2_ori = T1[:3, :3] @ T2[:3, :3] @ T3[:3, :3] @ init_ori
-            end2_pos = T1 @ T2 @ T3 @ T4 @ init_pos
-            end2_ori = T1[:3, :3] @ T2[:3, :3] @ T3[:3, :3] @ T4[:3, :3] @ init_ori
-            self.pose = np.block([end2_pos[:3], end2_ori])
+            self.base1_pos = T1 @ init_pos
+            self.base1_ori = T1[:3, :3] @ init_ori
+            self.end1_pos = T1 @ T2 @ init_pos
+            self.end1_ori = T1[:3, :3] @ T2[:3, :3] @ init_ori
+            self.base2_pos = T1 @ T2 @ T3 @ init_pos
+            self.base2_ori = T1[:3, :3] @ T2[:3, :3] @ T3[:3, :3] @ init_ori
+            self.end2_pos = T1 @ T2 @ T3 @ T4 @ init_pos
+            self.end2_ori = T1[:3, :3] @ T2[:3, :3] @ T3[:3, :3] @ T4[:3, :3] @ init_ori
+            self.pose = np.block([self.end2_pos[:3], self.end2_ori])
             self.w_R_1b = self.get_wR()
             self.w_R_2b = self.w_R_1b @ T2[:3, :3]
-            self.b1_P_1e_2e = end2_pos[:3] - end1_pos[:3]
-            self.w_P_1b_2e = end2_pos[:3] - base1_pos[:3]
+            self.b1_P_1e_2e = self.end2_pos[:3] - self.end1_pos[:3]
+            self.w_P_1b_2e = self.end2_pos[:3] - self.base1_pos[:3]
 
-            lg.add_line(init_pos[:3], base1_pos[:3])
-            lg.add_arc(base1_pos[:3], end1_pos[:3], base1_ori, end1_ori)
-            lg.add_line(end1_pos[:3], base2_pos[:3])
-            lg.add_arc(base2_pos[:3], end2_pos[:3], base2_ori, end2_ori)
+    # def plot_manipulator(self):
+    #     init_pos = np.array([0, 0, 0, 1])
+    #     init_ori = np.array([0, 0, 1])
+    #     lg = LineGenerator()
+    #     if self.mode == 1:
+    #         lg.add_arc(init_pos[:3], self.end2_pos[:3], init_ori, self.end2_ori)
 
-        # lg.plot_segments()
-        print("Current mode: ", self.mode, "Current pose: ", self.pose)
+    #     elif self.mode == 2:
+    #         lg.add_line(init_pos[:3], self.base2_pos[:3])
+    #         lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
+
+    #     elif self.mode == 3:
+    #         lg.add_arc(init_pos[:3], self.end1_pos[:3], init_ori, self.end1_ori)
+    #         lg.add_line(self.end1_pos[:3], self.base2_pos[:3])
+    #         lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
+        
+    #     elif self.mode == 4:
+    #         lg.add_line(init_pos[:3], self.base1_pos[:3])
+    #         lg.add_arc(self.base1_pos[:3], self.end1_pos[:3], self.base1_ori, self.end1_ori)
+    #         lg.add_line(self.end1_pos[:3], self.base2_pos[:3])
+    #         lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
+    #     # lg.plot_segments()
+    #     print("Current mode:", self.mode, ", Current pose: ", self.pose)
+
+    def plot_manipulator(self, ax):
+        init_pos = np.array([0, 0, 0, 1])
+        init_ori = np.array([0, 0, 1])
+        ax.clear()  # 清除之前的绘图
+
+        lg = LineGenerator()
+
+        if self.mode == 1:
+            lg.add_arc(init_pos[:3], self.end2_pos[:3], init_ori, self.end2_ori)
+
+        elif self.mode == 2:
+            lg.add_line(init_pos[:3], self.base2_pos[:3])
+            lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
+
+        elif self.mode == 3:
+            lg.add_arc(init_pos[:3], self.end1_pos[:3], init_ori, self.end1_ori)
+            lg.add_line(self.end1_pos[:3], self.base2_pos[:3])
+            lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
+
+        elif self.mode == 4:
+            lg.add_line(init_pos[:3], self.base1_pos[:3])
+            lg.add_arc(self.base1_pos[:3], self.end1_pos[:3], self.base1_ori, self.end1_ori)
+            lg.add_line(self.end1_pos[:3], self.base2_pos[:3])
+            lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
+
+        # 使用 LineGenerator 绘制生成的线段
+        for segment in lg.segments:
+            points = segment[0]
+            ax.plot(points[:, 0], points[:, 1], points[:, 2], linewidth=2)
+
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_xlim([-1, 1])
+        ax.set_ylim([-1, 1])
+        ax.set_zlim([0, 1])
+        ax.set_box_aspect([1, 1, 1])
+        plt.title('Manipulator Movement')
+        plt.grid(True)
 
     def check_transition(self):
         if self.mode == 1 and self.L2 > self.L_20:
@@ -389,28 +436,33 @@ class CSM:
             new_value = current_value + self.d_PHI[i] * time
             setattr(self, attr, new_value)
 
+def animate(i, csm, ax, step_size):
+    if np.linalg.norm(csm.pose - csm.target_pose) < 1e-3:
+        finshed = True
+    csm.check_transition()
+    csm.update()
+    csm.update_jacobians()
+
+    err_pos = csm.target_pose[:3] - csm.pose[:3]
+    err_ori = csm.target_pose[3:] - csm.pose[3:]
+    v = 1 * err_pos/np.linalg.norm(err_pos)
+    w = 1 * err_ori/np.linalg.norm(err_ori)
+    csm.get_dot_PHI(v, w)
+    csm.step(step_size)
+    csm.plot_manipulator(ax)
 
 if __name__ == "__main__":
+    fig = plt.figure(figsize=(20, 16))
+    ax = fig.add_subplot(111, projection='3d')
     csm = CSM(0.5, 0.5, 0.15, 0.15)
     csm.target_pose = np.array([0.5, 0.5, 0.5, 0, 1, 0])
     finshed = False
-    step_size = 0.1
+    step_size = 0.01
+    
     try:
-        while not finshed:
-            if np.linalg.norm(csm.pose - csm.target_pose) < 1e-3:
-                finshed = True
-            csm.check_transition()
-            csm.plot_manipulator()
-            csm.update_jacobians()
-
-            err_pos = csm.target_pose[:3] - csm.pose[:3]
-            err_ori = csm.target_pose[3:] - csm.pose[3:]
-            v = 1 * err_pos/np.linalg.norm(err_pos)
-            w = 1 * err_ori/np.linalg.norm(err_ori)
-            csm.get_dot_PHI(v, w)
-            csm.step(step_size)
-
-
+        # 那我能不能单开一个线程来画动画？
+        ani = FuncAnimation(fig, animate, fargs=(csm, ax, step_size), frames=100, interval=100)
+        plt.show()
         print("Finished")
     except KeyboardInterrupt:
         print("Interrupted")
