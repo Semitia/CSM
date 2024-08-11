@@ -59,7 +59,7 @@ class LineGenerator:
 
         # Check if the two directions are parallel
         if np.allclose(np.cross(m0, m1), 0):
-            print("Directions are parallel")
+            # print("Directions are parallel")
             # Add a straight line segment instead
             self.add_line(p0, p1, num_points)
             return
