@@ -145,12 +145,12 @@ if __name__ == "__main__":
         plt.close(fig)
         print("Interrupted")
         # 保存成功和失败数据
-        if successes:
-            with open("successes_play.json", "w") as f:
-                json.dump(successes, f, indent=4)
-            print(f"Recorded {len(successes)} successes to successes.json")
+        # if successes:
+        #     with open("successes_play.json", "w") as f:
+        #         json.dump(successes, f, indent=4)
+        #     print(f"Recorded {len(successes)} successes to successes.json")
         
-        if failures:
-            with open("failures_play.json", "w") as f:
-                json.dump(failures, f, indent=4)
-            print(f"Recorded {len(failures)} failures to failures.json")
+        # if failures:
+        #     with open("failures_play.json", "w") as f:
+        #         json.dump(failures, f, indent=4)
+        #     print(f"Recorded {len(failures)} failures to failures.json")

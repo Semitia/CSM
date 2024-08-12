@@ -139,6 +139,20 @@ class CSM:
         self.update()
         self.update_jacobians()
 
+    def reset(self):
+        self.mode = 1
+        self.phi = 0
+        self.L1 = 0
+        self.L2 = 0.2
+        self.Lr = 0
+        self.Ls = 0
+        self.theta_1 = 0
+        self.theta_2 = 0
+        self.delta_1 = 0
+        self.delta_2 = 0
+        self.update()
+        self.update_jacobians()
+
     def get_jacobians(self, theta, L, delta):
         if theta == 0:
             J_v3 = np.array([
@@ -295,6 +309,20 @@ class CSM:
             self.d_PHI = J4_v_p@v + tem@damped_pseudo_inverse(self.J4_w@tem)@(w - self.J4_w@J4_v_p@v)
             # self.d_PHI = J4_v_p @ v
         # print("pose: ", self.pose, ", d_PHI: ", self.d_PHI)
+
+    def set_state(self, mode, phi, L1, L2, Lr, Ls, theta_1, theta_2, delta_1, delta_2):
+        self.mode = mode
+        self.phi = phi
+        self.L1 = L1   
+        self.L2 = L2
+        self.Lr = Lr
+        self.Ls = Ls
+        self.theta_1 = theta_1
+        self.theta_2 = theta_2
+        self.delta_1 = delta_1
+        self.delta_2 = delta_2
+        self.update()
+        self.update_jacobians()
 
     def update(self):
         init_pos = np.array([0, 0, 0, 1])
@@ -545,10 +573,17 @@ class CSM:
         # 限制Ls使其不超过最大值
         self.Ls = min(self.Ls, self.L_s0)
         # 曲率限制
-        self.theta_2 = min(self.theta_2, self.kappa_20 * self.L2)
+        # self.theta_2 = min(self.theta_2, self.kappa_20 * self.L2)
+        # if self.mode == 3 or self.mode == 4:
+        #     self.theta_1 = min(self.theta_1, self.kappa_10 * self.L1)
+        if abs(self.theta_2) > self.kappa_20 * self.L2:
+            self.theta_2 = self.kappa_20 * self.L2 * (1 if self.theta_2 >= 0 else -1)
+
+        # 对 self.theta_1 应用曲率限制（仅在 mode 为 3 或 4 时）
         if self.mode == 3 or self.mode == 4:
-            self.theta_1 = min(self.theta_1, self.kappa_10 * self.L1)
-        
+            if abs(self.theta_1) > self.kappa_10 * self.L1:
+                self.theta_1 = self.kappa_10 * self.L1 * (1 if self.theta_1 >= 0 else -1)
+
 
 if __name__ == "__main__":
     csm = CSM(0.5, 0.5, 0.15, 0.15, 0.01)

@@ -1,0 +1,187 @@
+[
+    {
+        "id": 1,
+        "mode": 1,
+        "steps_taken": 192
+    },
+    {
+        "id": 2,
+        "mode": 1,
+        "steps_taken": 32
+    },
+    {
+        "id": 4,
+        "mode": 1,
+        "steps_taken": 45
+    },
+    {
+        "id": 6,
+        "mode": 1,
+        "steps_taken": 55
+    },
+    {
+        "id": 11,
+        "mode": 1,
+        "steps_taken": 61
+    },
+    {
+        "id": 12,
+        "mode": 1,
+        "steps_taken": 637
+    },
+    {
+        "id": 13,
+        "mode": 1,
+        "steps_taken": 100
+    },
+    {
+        "id": 15,
+        "mode": 4,
+        "steps_taken": 27
+    },
+    {
+        "id": 16,
+        "mode": 3,
+        "steps_taken": 192
+    },
+    {
+        "id": 17,
+        "mode": 1,
+        "steps_taken": 57
+    },
+    {
+        "id": 18,
+        "mode": 1,
+        "steps_taken": 459
+    },
+    {
+        "id": 23,
+        "mode": 3,
+        "steps_taken": 23
+    },
+    {
+        "id": 24,
+        "mode": 1,
+        "steps_taken": 40
+    },
+    {
+        "id": 29,
+        "mode": 1,
+        "steps_taken": 198
+    },
+    {
+        "id": 30,
+        "mode": 3,
+        "steps_taken": 467
+    },
+    {
+        "id": 31,
+        "mode": 2,
+        "steps_taken": 77
+    },
+    {
+        "id": 33,
+        "mode": 4,
+        "steps_taken": 9
+    },
+    {
+        "id": 39,
+        "mode": 1,
+        "steps_taken": 39
+    },
+    {
+        "id": 40,
+        "mode": 1,
+        "steps_taken": 66
+    },
+    {
+        "id": 41,
+        "mode": 2,
+        "steps_taken": 367
+    },
+    {
+        "id": 43,
+        "mode": 2,
+        "steps_taken": 2
+    },
+    {
+        "id": 44,
+        "mode": 2,
+        "steps_taken": 13
+    },
+    {
+        "id": 46,
+        "mode": 2,
+        "steps_taken": 2
+    },
+    {
+        "id": 48,
+        "mode": 1,
+        "steps_taken": 58
+    },
+    {
+        "id": 49,
+        "mode": 3,
+        "steps_taken": 2
+    },
+    {
+        "id": 58,
+        "mode": 1,
+        "steps_taken": 347
+    },
+    {
+        "id": 60,
+        "mode": 3,
+        "steps_taken": 31
+    },
+    {
+        "id": 62,
+        "mode": 1,
+        "steps_taken": 68
+    },
+    {
+        "id": 64,
+        "mode": 3,
+        "steps_taken": 23
+    },
+    {
+        "id": 65,
+        "mode": 3,
+        "steps_taken": 65
+    },
+    {
+        "id": 66,
+        "mode": 2,
+        "steps_taken": 172
+    },
+    {
+        "id": 67,
+        "mode": 2,
+        "steps_taken": 96
+    },
+    {
+        "id": 69,
+        "mode": 1,
+        "steps_taken": 52
+    },
+    {
+        "id": 70,
+        "mode": 3,
+        "steps_taken": 2
+    },
+    {
+        "id": 71,
+        "mode": 3,
+        "steps_taken": 48
+    },
+    {
+        "id": 72,
+        "mode": 4,
+        "steps_taken": 18
+    },
+    {
+        "id": 73,
+        "mode": 1,
+        "steps_taken": 117
+    }
+]
