@@ -18,3 +18,7 @@
 4. 目标速度获取
 ![alt text](/imgs/image-4.png)
 角速度的忘记除以方向了吧
+
+5. 速度雅可比矩阵
+![alt text](/imgs/image-5.png)
+![alt text](/imgs/image-6.png)

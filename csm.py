@@ -3,6 +3,52 @@ from LineGenerator import LineGenerator
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
+def calculate_angular_velocity(v1, v2, delta_t):
+    """
+    计算从方向向量 v1 到 v2 的角速度。
+
+    参数:
+    v1 : array_like
+        初始方向向量。
+    v2 : array_like
+        最终方向向量。
+    delta_t : float
+        时间差（秒）。
+
+    返回:
+    omega : ndarray
+        角速度向量 (ωx, ωy, ωz)。
+    """
+    # 确保v1和v2是单位向量
+    v1 = v1 / np.linalg.norm(v1)
+    v2 = v2 / np.linalg.norm(v2)
+
+    # 计算旋转轴 (叉积)
+    n = np.cross(v1, v2)
+
+    # 计算旋转角 (点积)
+    cos_theta = np.dot(v1, v2)
+    # 限制cos_theta的范围在[-1, 1]内，以防止计算误差导致的问题
+    cos_theta = np.clip(cos_theta, -1.0, 1.0)
+    theta = np.arccos(cos_theta)
+
+    # 计算角速度的大小
+    if delta_t == 0:
+        raise ValueError("delta_t cannot be zero, as it would result in a division by zero.")
+    omega_magnitude = theta / delta_t
+
+    # 计算角速度向量
+    if np.linalg.norm(n) == 0:
+        # 如果n是零向量，则方向不变，角速度为0
+        return np.array([0, 0, 0])
+    else:
+        # 单位化旋转轴向量
+        n_unit = n / np.linalg.norm(n)
+        # 角速度向量
+        omega = omega_magnitude * n_unit
+
+    return omega
+
 def skew_symmetric_matrix(p):
     return np.array([
         [0, -p[2], p[1]],
@@ -193,31 +239,6 @@ class CSM:
         # print("J4_w (shape {}):\n{}".format(self.J4_w.shape, self.J4_w))
         return
 
-    def get_dot_PHI(self, v, w):
-        self.target_delta_pos = v * self.step_size
-        self.target_delta_ori = w * self.step_size
-        if self.mode == 1:
-            J1_v_p = damped_pseudo_inverse(self.J1_v)
-            tem = (np.eye(4) - J1_v_p @ self.J1_v)
-            # self.d_PHI = J1_v_p@v + tem@damped_pseudo_inverse(self.J1_w@tem)@(w - self.J1_w@J1_v_p@v)
-            self.d_PHI = J1_v_p @ v  # 只跟踪位置
-        elif self.mode == 2:
-            J2_v_p = damped_pseudo_inverse(self.J2_v)
-            tem = (np.eye(4) - J2_v_p @ self.J2_v)
-            # self.d_PHI = J2_v_p@v + tem@damped_pseudo_inverse(self.J2_w@tem)@(w - self.J2_w@J2_v_p@v)
-            self.d_PHI = J2_v_p @ v
-        elif self.mode == 3:
-            J3_v_p = damped_pseudo_inverse(self.J3_v)
-            tem = (np.eye(6) - J3_v_p @ self.J3_v)
-            self.d_PHI = J3_v_p@v + tem@damped_pseudo_inverse(self.J3_w@tem)@(w - self.J3_w@J3_v_p@v)
-            # self.d_PHI = J3_v_p @ v
-        elif self.mode == 4:
-            J4_v_p = damped_pseudo_inverse(self.J4_v)
-            tem = (np.eye(6) - J4_v_p @ self.J4_v)
-            self.d_PHI = J4_v_p@v + tem@damped_pseudo_inverse(self.J4_w@tem)@(w - self.J4_w@J4_v_p@v)
-            # self.d_PHI = J4_v_p @ v
-        # print("pose: ", self.pose, ", d_PHI: ", self.d_PHI)
-
     def get_trans_mat(self, theta_t, L_t, delta_t):
         R_b_1 = np.array([  [0, np.cos(delta_t), np.sin(delta_t)],
                             [0, -np.sin(delta_t), np.cos(delta_t)],
@@ -250,6 +271,31 @@ class CSM:
                         [0, 0, 1, 0],
                         [0, 0, 0, 1]])
         return t
+
+    def get_dot_PHI(self, v, w):
+        self.target_delta_pos = v * self.step_size
+        self.target_delta_ori = w * self.step_size
+        if self.mode == 1:
+            J1_v_p = damped_pseudo_inverse(self.J1_v)
+            tem = (np.eye(4) - J1_v_p @ self.J1_v)
+            #  self.d_PHI = J1_v_p@v + tem@damped_pseudo_inverse(self.J1_w@tem)@(w - self.J1_w@J1_v_p@v)
+            self.d_PHI = J1_v_p @ v  # 只跟踪位置
+        elif self.mode == 2:
+            J2_v_p = damped_pseudo_inverse(self.J2_v)
+            tem = (np.eye(4) - J2_v_p @ self.J2_v)
+            # self.d_PHI = J2_v_p@v + tem@damped_pseudo_inverse(self.J2_w@tem)@(w - self.J2_w@J2_v_p@v)
+            self.d_PHI = J2_v_p @ v
+        elif self.mode == 3:
+            J3_v_p = damped_pseudo_inverse(self.J3_v)
+            tem = (np.eye(6) - J3_v_p @ self.J3_v)
+            self.d_PHI = J3_v_p@v + tem@damped_pseudo_inverse(self.J3_w@tem)@(w - self.J3_w@J3_v_p@v)
+            # self.d_PHI = J3_v_p @ v
+        elif self.mode == 4:
+            J4_v_p = damped_pseudo_inverse(self.J4_v)
+            tem = (np.eye(6) - J4_v_p @ self.J4_v)
+            self.d_PHI = J4_v_p@v + tem@damped_pseudo_inverse(self.J4_w@tem)@(w - self.J4_w@J4_v_p@v)
+            # self.d_PHI = J4_v_p @ v
+        # print("pose: ", self.pose, ", d_PHI: ", self.d_PHI)
 
     def update(self):
         init_pos = np.array([0, 0, 0, 1])
@@ -339,14 +385,15 @@ class CSM:
                 return
             self.pre_delta_pos = self.J4_v @ self.d_PHI
             self.pre_delta_ori = self.J4_w @ self.d_PHI
-        self.pre_delta_ori *= self.step_size
+        # self.pre_delta_ori *= self.step_size
         self.pre_delta_pos *= self.step_size
         delta_pos = self.pose[:3] - self.last_pose[:3]
-        delta_ori = self.pose[3:] - self.last_pose[3:]
+        delta_ori = calculate_angular_velocity(self.last_pose[3:], self.pose[3:], self.step_size)
         self.last_pose = self.pose
         # print("mode ",self.mode, ", target_d_pos:", self.target_delta_pos, ", delta_pos:", delta_pos)
         # print("mode ",self.mode, ", pre_d_pos:", self.pre_delta_pos, ", delta_pos:", delta_pos, ", pre_d_ori:", self.pre_delta_ori, ", delta_ori:", delta_ori)
-        print(f"mode {self.mode} , pre_d_pos: [{', '.join([f'{x:.3f}' for x in self.pre_delta_pos])}] , delta_pos: [{', '.join([f'{x:.3f}' for x in delta_pos])}] , pre_d_ori: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , delta_ori: [{', '.join([f'{x:.3f}' for x in delta_ori])}]")
+        # print(f"mode {self.mode} , pre_d_pos: [{', '.join([f'{x:.3f}' for x in self.pre_delta_pos])}] , delta_pos: [{', '.join([f'{x:.3f}' for x in delta_pos])}] , pre_d_ori: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , delta_ori: [{', '.join([f'{x:.3f}' for x in delta_ori])}]")
+        print(f"mode {self.mode} , pre_omega: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , omega: [{', '.join([f'{x:.3f}' for x in delta_ori])}]", "d_PHI: ", self.d_PHI*self.step_size)
 
     def plot_manipulator(self, ax):
         init_pos = np.array([0, 0, 0, 1])
@@ -491,59 +538,63 @@ class CSM:
             new_value = current_value + self.d_PHI[i] * self.step_size
             setattr(self, attr, new_value)
 
-        # # 限制Ls使其不超过最大值
-        # self.Ls = min(self.Ls, self.L_s0)
-        # # 曲率限制
-        # self.theta_2 = min(self.theta_2, self.kappa_20 * self.L2)
-        # if self.mode == 3 or self.mode == 4:
-        #     self.theta_1 = min(self.theta_1, self.kappa_10 * self.L1)
+        # 限制Ls使其不超过最大值
+        self.Ls = min(self.Ls, self.L_s0)
+        # 曲率限制
+        self.theta_2 = min(self.theta_2, self.kappa_20 * self.L2)
+        if self.mode == 3 or self.mode == 4:
+            self.theta_1 = min(self.theta_1, self.kappa_10 * self.L1)
         
 
 def normalize_vector(v):
     norm = np.linalg.norm(v)
-    if norm < 1:
+    if norm < 1e-3:
         return v
     return v / norm
 
-def animate(i, csm, ax, ani):
-    global finshed
-    # if np.linalg.norm(csm.pose - csm.target_pose) < 1e-2:
-    if np.linalg.norm(csm.pose[:3] - csm.target_pose[:3]) < 1e-2:
-        print("reach target")
-        finshed = True
+def generate_random_target():
+    # 生成随机位置，模长小于机器人长度的0.8倍
+    max_length = 0.8 * 1.3
+    random_position = np.random.uniform(-1, 1, 3)
+    random_position = random_position / np.linalg.norm(random_position) * np.random.uniform(max_length/4, max_length)
+    
+    # 生成随机方向向量
+    random_direction = np.random.uniform(-1, 1, 3)
+    random_direction = random_direction / np.linalg.norm(random_direction)
+    
+    return np.concatenate([random_position, random_direction])
+
+def animate(i, csm, ax):
     csm.check_transition()
     csm.update()
-    csm.debug()
+    # csm.debug()
     csm.update_jacobians()
 
-    err_pos = csm.target_pose[:3] - csm.pose[:3]
-    err_ori = csm.target_pose[3:] - csm.pose[3:]
-    v = normalize_vector(err_pos)
-    w = normalize_vector(err_ori)
+    v = normalize_vector(csm.target_pose[:3] - csm.pose[:3])
+    w = calculate_angular_velocity(csm.pose[3:], csm.target_pose[3:], 1)
     csm.get_dot_PHI(v, w)
     csm.step()
     csm.plot_manipulator(ax)
 
-    if finshed:
-        ani.event_source.stop()
-        print("Animation finished")
+    if np.linalg.norm(csm.pose - csm.target_pose) < 0.08:
+        print("Reached target")
+        csm.target_pose = generate_random_target()  # 生成新的目标点
+        print(f"New target: {csm.target_pose}")
 
 if __name__ == "__main__":
     fig = plt.figure(figsize=(20, 16))
     ax = fig.add_subplot(111, projection='3d')
-    csm = CSM(0.5, 0.5, 0.15, 0.15, 0.04)
-    csm.target_pose = np.array([-0.3, 0.0, 0.45, 0, 0, 1])
-    finshed = False
+    csm = CSM(0.5, 0.5, 0.15, 0.15, 0.01)
+    csm.target_pose = np.array([0.3, 0.3, 0.65, 1, 0, 0])
     
     try:
         # 那我能不能单开一个线程来画动画？
-        ani = FuncAnimation(fig, animate, fargs=(csm, ax, None), frames=100, interval=100)
-        ani._args = (csm, ax, ani)  # 在调用后更新 fargs 以传入 ani 自身
+        ani = FuncAnimation(fig, animate, fargs=(csm, ax), frames=100, interval=33)
+        # ani._args = (csm, ax, ani)  # 在调用后更新 fargs 以传入 ani 自身
         plt.show()
         print("Finished")
     except KeyboardInterrupt:
-        if 'ani' in locals():
-            ani.event_source.stop()
+        ani.event_source.stop()
         # 关闭图形窗口
         plt.close(fig)
         print("Interrupted")
