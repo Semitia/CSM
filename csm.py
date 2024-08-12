@@ -1,7 +1,6 @@
 import numpy as np
 from LineGenerator import LineGenerator
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 
 def calculate_angular_velocity(v1, v2, delta_t):
     """
@@ -93,8 +92,8 @@ class CSM:
         self.theta_2 = 0
         self.delta_1 = 0
         self.delta_2 = 0
-        self.kappa_10 = (np.pi) / L_10 # 假设能弯120度
-        self.kappa_20 = (np.pi) / L_20
+        self.kappa_10 = (2*np.pi/3) / L_10 # 假设能弯120度
+        self.kappa_20 = (2*np.pi/3) / L_20
         # segment 1\2 的雅可比矩阵
         self.J_1v2 = None
         self.J_1w2 = None
@@ -460,6 +459,10 @@ class CSM:
             self.state_transition(4, 3)
 
     def state_transition(self, current_mode, new_mode):
+        if current_mode == new_mode:
+            print("same mode")
+            return
+        
         if current_mode == 1 and new_mode == 2:
             self.mode = 2
             self.Lr = self.L2 - self.L_20
@@ -492,6 +495,7 @@ class CSM:
             self.Ls = 0
 
         else:
+            print(f"Invalid mode transition: {current_mode} -> {new_mode}")
             raise ValueError("Invalid mode transition")
 
     def update_jacobians(self):
@@ -546,55 +550,7 @@ class CSM:
             self.theta_1 = min(self.theta_1, self.kappa_10 * self.L1)
         
 
-def normalize_vector(v):
-    norm = np.linalg.norm(v)
-    if norm < 1e-3:
-        return v
-    return v / norm
-
-def generate_random_target():
-    # 生成随机位置，模长小于机器人长度的0.8倍
-    max_length = 0.8 * 1.3
-    random_position = np.random.uniform(-1, 1, 3)
-    random_position = random_position / np.linalg.norm(random_position) * np.random.uniform(max_length/4, max_length)
-    
-    # 生成随机方向向量
-    random_direction = np.random.uniform(-1, 1, 3)
-    random_direction = random_direction / np.linalg.norm(random_direction)
-    
-    return np.concatenate([random_position, random_direction])
-
-def animate(i, csm, ax):
-    csm.check_transition()
-    csm.update()
-    # csm.debug()
-    csm.update_jacobians()
-
-    v = normalize_vector(csm.target_pose[:3] - csm.pose[:3])
-    w = calculate_angular_velocity(csm.pose[3:], csm.target_pose[3:], 1)
-    csm.get_dot_PHI(v, w)
-    csm.step()
-    csm.plot_manipulator(ax)
-
-    if np.linalg.norm(csm.pose - csm.target_pose) < 0.08:
-        print("Reached target")
-        csm.target_pose = generate_random_target()  # 生成新的目标点
-        print(f"New target: {csm.target_pose}")
-
 if __name__ == "__main__":
-    fig = plt.figure(figsize=(20, 16))
-    ax = fig.add_subplot(111, projection='3d')
     csm = CSM(0.5, 0.5, 0.15, 0.15, 0.01)
     csm.target_pose = np.array([0.3, 0.3, 0.65, 1, 0, 0])
     
-    try:
-        # 那我能不能单开一个线程来画动画？
-        ani = FuncAnimation(fig, animate, fargs=(csm, ax), frames=100, interval=33)
-        # ani._args = (csm, ax, ani)  # 在调用后更新 fargs 以传入 ani 自身
-        plt.show()
-        print("Finished")
-    except KeyboardInterrupt:
-        ani.event_source.stop()
-        # 关闭图形窗口
-        plt.close(fig)
-        print("Interrupted")
