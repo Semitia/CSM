@@ -37,12 +37,12 @@ class LineGenerator:
         # 预定义的颜色列表
         self.colors = ['r', 'g', 'b', 'y', 'm', 'c', 'orange', 'black', 'purple', 'brown']
         
-    def add_line(self, p0, p1, num_points=20):
+    def add_line(self, p0, p1, num_points=3):
         t = np.linspace(0, 1, num_points) # (num_points, )
         line_points = np.outer(1 - t, p0) + np.outer(t, p1) # (num_points, 3)
         self.segments.append((line_points, p0, p1))
         
-    def add_hermite_curve(self, p0, p1, m0, m1, num_points=50):
+    def add_hermite_curve(self, p0, p1, m0, m1, num_points=15):
         t = np.linspace(0, 1, num_points)
         h00 = (2 * t ** 3) - (3 * t ** 2) + 1
         h10 = t ** 3 - 2 * t ** 2 + t
@@ -52,7 +52,8 @@ class LineGenerator:
         curve_points = np.outer(h00, p0) + np.outer(h10, m0) + np.outer(h01, p1) + np.outer(h11, m1)
         self.segments.append((curve_points, p0, p1))
     
-    def add_arc(self, p0, p1, m0, m1, num_points=50):
+    def add_arc(self, p0, p1, m0, m1, num_points=15):
+        # 绘制的时候，点点之间会直线连接，num_points 少一点也无妨
         # Ensure inputs are float arrays
         p0 = np.array(p0, dtype=np.float64)
         p1 = np.array(p1, dtype=np.float64)
