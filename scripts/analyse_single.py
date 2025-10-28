@@ -7,7 +7,7 @@ from matplotlib.animation import FuncAnimation
 
 
 # 分析失败数据
-filename = "failures_replay.json"
+filename = "./data/failures_replay.json"
 with open(filename, 'r') as f:
     data = json.load(f)
 print("failure_len:", len(data))
@@ -78,8 +78,11 @@ def animate(i, csm, ax):
     csm.step()
     csm.plot_manipulator(ax)
 
+    if np.linalg.norm(csm.pose - csm.target_pose) < 0.05:
+        print("Reached target")
+
 csm = CSM(0.5, 0.5, 0.15, 0.15, 0.01)
-failure = data[3]
+failure = data[40]
 Ls = failure["Ls"]
 Lr = failure["Lr"]
 L1 = failure["L1"]

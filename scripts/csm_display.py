@@ -128,13 +128,12 @@ if __name__ == "__main__":
     fig = plt.figure(figsize=(20, 16))
     ax = fig.add_subplot(111, projection='3d')
     csm = CSM(0.5, 0.5, 0.15, 0.15, 0.01)
-    workspace_data = load_workspace_data("workspace_data.json")
+    workspace_data = load_workspace_data("./data/workspace_data.json")
     mode, pose = get_random_target(workspace_data)
-    csm.target_pose = pose
+    csm.target_pose = [0.3, 0.5, 0.8, 0, 1, 0]
     print("space:", mode, "target:", pose)
 
     try:
-        # 那我能不能单开一个线程来画动画？
         ani = FuncAnimation(fig, animate, fargs=(csm, ax), frames=100, interval=17)
         # ani._args = (csm, ax, ani)  # 在调用后更新 fargs 以传入 ani 自身
         plt.show()
