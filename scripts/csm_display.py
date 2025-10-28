@@ -135,7 +135,6 @@ if __name__ == "__main__":
 
     try:
         ani = FuncAnimation(fig, animate, fargs=(csm, ax), frames=100, interval=17)
-        # ani._args = (csm, ax, ani)  # 在调用后更新 fargs 以传入 ani 自身
         plt.show()
         print("Finished")
     except KeyboardInterrupt:

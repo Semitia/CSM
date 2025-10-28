@@ -452,9 +452,10 @@ class CSM:
         colors = ['r', 'g', 'b', 'y', 'm', 'c', 'orange', 'black', 'purple', 'brown']
         for i, segment in enumerate(lg.segments):
             points = segment[0]
-            color = colors[i % len(colors)]  # 使用模运算确保不会超出列表范围
-            ax.plot(points[:, 0], points[:, 1], points[:, 2], linewidth=2, color=color)
-
+            # 倒序赋色：顶部（序号大）用列表前面的颜色，可保持颜色统一
+            color = colors[(len(lg.segments) - 1 - i) % len(colors)]  # 使用模运算确保不会超出列表范围
+            ax.plot(points[:, 0], points[:, 1], points[:, 2], color=color, linewidth=2)
+        
         # 添加表示目标位置和方向的箭头
         target_position = self.target_pose[:3]
         target_orientation = self.target_pose[3:6]

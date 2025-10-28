@@ -34,8 +34,15 @@ class LineGenerator:
     def __init__(self):
         self.segments = []
         self.debug_info = []
-
-    def add_hermite_curve(self, p0, p1, m0, m1, num_points=100):
+        # 预定义的颜色列表
+        self.colors = ['r', 'g', 'b', 'y', 'm', 'c', 'orange', 'black', 'purple', 'brown']
+        
+    def add_line(self, p0, p1, num_points=20):
+        t = np.linspace(0, 1, num_points) # (num_points, )
+        line_points = np.outer(1 - t, p0) + np.outer(t, p1) # (num_points, 3)
+        self.segments.append((line_points, p0, p1))
+        
+    def add_hermite_curve(self, p0, p1, m0, m1, num_points=50):
         t = np.linspace(0, 1, num_points)
         h00 = (2 * t ** 3) - (3 * t ** 2) + 1
         h10 = t ** 3 - 2 * t ** 2 + t
@@ -44,13 +51,8 @@ class LineGenerator:
 
         curve_points = np.outer(h00, p0) + np.outer(h10, m0) + np.outer(h01, p1) + np.outer(h11, m1)
         self.segments.append((curve_points, p0, p1))
-
-    def add_line(self, p0, p1, num_points=100):
-        t = np.linspace(0, 1, num_points)
-        line_points = np.outer(1 - t, p0) + np.outer(t, p1)
-        self.segments.append((line_points, p0, p1))
     
-    def add_arc(self, p0, p1, m0, m1, num_points=100):
+    def add_arc(self, p0, p1, m0, m1, num_points=50):
         # Ensure inputs are float arrays
         p0 = np.array(p0, dtype=np.float64)
         p1 = np.array(p1, dtype=np.float64)
@@ -105,15 +107,14 @@ class LineGenerator:
         fig = plt.figure(figsize=(20, 16))
         ax = fig.add_subplot(111, projection='3d')
         
-        # 预定义的颜色列表
-        colors = ['r', 'g', 'b', 'y', 'm', 'c', 'orange', 'black', 'purple', 'brown']
-        
+        # 绘制各段
         for i, segment in enumerate(self.segments):
             points = segment[0]
-            # 从颜色列表中循环选择颜色
-            color = colors[i % len(colors)]  # 使用模运算确保不会超出列表范围
+            # 倒序赋色：顶部（序号大）用列表前面的颜色，可保持颜色统一
+            color = self.colors[(len(self.segments) - 1 - i) % len(self.colors)]  # 使用模运算确保不会超出列表范围
             ax.plot(points[:, 0], points[:, 1], points[:, 2], color=color, linewidth=2)
         
+        # DEBUG
         for p0, m0, r0_vec, p1, m1, r1_vec in self.debug_info:
             t = np.linspace(-1, 1, 100)
             line1 = p0 + np.outer(t, r0_vec)

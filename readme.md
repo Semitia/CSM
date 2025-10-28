@@ -1,5 +1,8 @@
 # CSM
 
+## ToDo
+- CSM和LineGenerator绘制代码重复，需优化复用
+
 ## 疑惑
 
 1. 雅可比矩阵
