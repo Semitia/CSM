@@ -1,80 +1,107 @@
-# import numpy as np
-# import matplotlib.pyplot as plt
-# from mpl_toolkits.mplot3d import Axes3D
-
-# fig = plt.figure()
-# ax = fig.add_subplot(111, projection='3d')
-
-# # 定义4个不同半径的“工作空间壳层”，由内到外
-# radii = [50, 70, 90, 110]
-# colors = ['r', 'orange', 'yellow', 'grey']
-
-# # 创建球面网格
-# theta = np.linspace(0, np.pi, 40)
-# phi = np.linspace(0, 2 * np.pi, 40)
-# theta, phi = np.meshgrid(theta, phi)
-# alpha_list = [0.8, 0.1, 0.1, 0.08]
-# i=0
-# for r, color in zip(radii, colors):
-#     x = r * np.sin(theta) * np.cos(phi)
-#     y = r * np.sin(theta) * np.sin(phi)
-#     z = r * np.cos(theta)
-#     ax.plot_surface(x, y, z, color=color, alpha=alpha_list[i], linewidth=0, edgecolor='none')
-#     i+=1
-    
-# # 设置可视化效果
-# ax.set_xlabel('X')
-# ax.set_ylabel('Y')
-# ax.set_zlabel('Z')
-# ax.set_box_aspect([1,1,1])
-# plt.show()
-
+import json
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial import ConvexHull
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
-# 创建3D图
-fig = plt.figure(figsize=(6, 6))
-ax = fig.add_subplot(111, projection='3d')
-ax.set_box_aspect([1, 1, 1])  # 坐标比例一致
+# ===== 配置 =====
+json_path = "./data/workspace_data.json"  # ← 改成你的路径
+WIRE_ONLY = False                  # 只画线框：True；半透明表面：False
+MODE_COLORS = {1: "#E41A1C", 2: "#EED87D92", 3: "#9ACDE5D0", 4: "#C7C7C7AD"}  # C1~C4
+MODE_LABELS = {1: "C1", 2: "C2", 3: "C3", 4: "C4"}
 
-def draw_shell(points, face_color, label=None):
-    hull = ConvexHull(points)
-    # 绘制外壳（半透明表面 + 轻边线，制造“纹理感”）
-    ax.plot_trisurf(points[:, 0], points[:, 1], points[:, 2],
-                    triangles=hull.simplices,
-                    linewidth=0.15,                # 边线宽度
-                    edgecolor=(0, 0, 0, 0.12),     # 半透明黑边线
-                    antialiased=True,
-                    alpha=0.30,                    # 表面透明度
-                    color=face_color,              # 填充颜色
-                    shade=False)                   # 关闭自动阴影
+def load_points_by_mode(path):
+    with open(path, "r") as f:
+        data = json.load(f)
+    by_mode = {}
+    for m in (1, 2, 3, 4):
+        pts = [np.asarray(d["pose"][:3], float) for d in data if int(d["mode"]) == m]
+        by_mode[m] = np.vstack(pts) if pts else np.empty((0, 3))
+        print(f"Mode {m}: {by_mode[m].shape[0]} points")
+    return by_mode
 
-# 生成4个不同构型的模拟点云
-rng = np.random.default_rng(0)
-colors = ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3']
+def draw_shell(ax, points, color, label=None, wire_only=False):
+    # 去重避免 Qhull 数值问题；不足 4 点时退化成散点
+    P = np.unique(points.round(9), axis=0)
+    if P.shape[0] < 4:
+        ax.scatter(P[:,0], P[:,1], P[:,2], s=3, color=color, label=label)
+        return
 
-for i, c in enumerate(colors):
-    r = 60 + i * 12  # 每层半径
-    # 生成外层点（球壳 + 噪声）
-    P = rng.normal(size=(2000, 3))
-    P = P / np.linalg.norm(P, axis=1, keepdims=True) * (r + rng.normal(0, 3, size=(2000, 1)))
-    draw_shell(P, c, label=f'C{i+1}')
+    hull = ConvexHull(P, qhull_options="QJ")
 
-# 坐标轴设置
-ax.set_xlabel('X')
-ax.set_ylabel('Y')
-ax.set_zlabel('Z')
-ax.grid(False)
+    if not wire_only:
+        # 半透明表面 + 轻边线
+        surf = ax.plot_trisurf(P[:,0], P[:,1], P[:,2],
+                               triangles=hull.simplices,
+                               linewidth=0.35,
+                               edgecolor=(0, 0, 0, 0.15),
+                               antialiased=True,
+                               alpha=0.30,
+                               color=color,
+                               shade=False)
+        if label:
+            ax.plot([], [], [], color=color, label=label)
+        return
 
-# 去掉3D背景面（新版 Matplotlib 写法）
-for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
-    axis.pane.set_facecolor((1, 1, 1, 0))  # 背景面透明
-    axis.pane.fill = False                 # 关闭填充
+    # ---- 仅线框：从凸包三角面提取“唯一边”并绘制 ----
+    tris = hull.simplices
+    edges = set()
+    for a, b, c in tris:
+        edges.add(tuple(sorted((a, b))))
+        edges.add(tuple(sorted((b, c))))
+        edges.add(tuple(sorted((c, a))))
 
-# 可选：设定观察角度，让形状更立体（可调整）
-ax.view_init(elev=20, azim=45)
+    segments = [(P[i], P[j]) for (i, j) in edges]
+    lc = Line3DCollection(segments, colors=color, linewidths=0.6, alpha=0.9)
+    ax.add_collection3d(lc)
 
-plt.tight_layout()
-plt.show()
+    # 让坐标轴包含这些线段（有时 3D 集合不会自动扩展范围）
+    mins = P.min(axis=0); maxs = P.max(axis=0)
+    ax.set_xlim(mins[0], maxs[0]); ax.set_ylim(mins[1], maxs[1]); ax.set_zlim(mins[2], maxs[2])
+
+    if label:
+        ax.plot([], [], [], color=color, label=label)
+
+
+def main():
+    by_mode = load_points_by_mode(json_path)
+    # 统计全局范围用于设定轴限
+    all_pts = np.vstack([pts for pts in by_mode.values() if pts.size])
+    fig = plt.figure(figsize=(7, 7))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_box_aspect([1, 1, 1])
+
+    # 逐模式绘制
+    for m in (1, 2, 3, 4):
+        pts = by_mode[m]
+        if pts.size == 0:
+            continue
+        draw_shell(ax, pts, MODE_COLORS[m], label=MODE_LABELS[m], wire_only=WIRE_ONLY)
+
+    # 轴/视觉优化
+    if all_pts.size:
+        pad = 0.05 * (all_pts.max() - all_pts.min())
+        mins = all_pts.min(axis=0) - pad
+        maxs = all_pts.max(axis=0) + pad
+        ax.set_xlim(mins[0], maxs[0])
+        ax.set_ylim(mins[1], maxs[1])
+        ax.set_zlim(mins[2], maxs[2])
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.grid(False)
+    # 去掉背景面
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_facecolor((1, 1, 1, 0))
+        axis.pane.fill = False
+
+    ax.legend(loc="upper right", frameon=False)
+    # ax.view_init(elev=22, azim=-45)     # 斜二测视角
+    # ax.view_init(elev=0, azim=0)        # 沿x轴观察
+    ax.view_init(elev=0, azim=90)       # 沿y轴观察
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    main()

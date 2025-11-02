@@ -1,6 +1,7 @@
 import json
 import numpy as np
 from csm import CSM
+from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 
 def generate_workspace(csm, mode, num_samples=2000):
@@ -70,10 +71,20 @@ def generate_workspace(csm, mode, num_samples=2000):
 
     return np.array(workspace_points)
 
-def generate_workspace_data(csm, mode, num_samples=2500):
+def generate_workspace_data(csm, mode, num_samples=2500, show_progress=True, desc=None):
+    """
+    生成给定 mode 的工作空间采样数据。
+    - show_progress: 是否显示 tqdm 进度条
+    - desc: 进度条前缀描述(默认 'Mode {mode}')
+    """
     csm.state_transition(csm.mode, mode)
     workspace_data = []
-    for _ in range(num_samples):
+
+    iterator = range(num_samples)
+    if show_progress:
+        iterator = tqdm(iterator, total=num_samples, desc=desc or f"Mode {mode}", unit="sample", dynamic_ncols=True)
+
+    for _ in iterator:
         # 随机生成姿态参数
         csm.phi = np.random.uniform(0, 2 * np.pi)
         if mode == 1:
@@ -96,10 +107,11 @@ def generate_workspace_data(csm, mode, num_samples=2500):
             csm.delta_1 = np.random.uniform(0, 2 * np.pi)
             csm.theta_2 = np.random.uniform(0, csm.kappa_20 * csm.L2)
             csm.delta_2 = np.random.uniform(0, 2 * np.pi)
+
         csm.update()
         pose = csm.pose.tolist()
         workspace_data.append({"mode": mode, "pose": pose})
-        
+
     return workspace_data
 
 def plot_workspace(ax, workspace, label, color):
@@ -174,7 +186,7 @@ if __name__ == "__main__":
 
     # 生成并保存工作空间数据
     all_workspace_data = []
-    num_samples_per_mode = [2500, 2500, 5000, 5000]  # 为每个模式指定样本数量
+    num_samples_per_mode = [125000, 125000, 125000, 125000]  # 为每个模式指定样本数量
     for mode in range(1, 5):  # 生成模式1到模式4的数据
         workspace_data = generate_workspace_data(csm, mode, num_samples=num_samples_per_mode[mode-1])
         all_workspace_data.extend(workspace_data)
