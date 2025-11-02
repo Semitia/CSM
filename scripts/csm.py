@@ -49,6 +49,13 @@ def calculate_angular_velocity(v1, v2, delta_t):
     return omega
 
 def skew_symmetric_matrix(p):
+    """
+    计算向量p的反对称矩阵
+    参数:
+        p: 输入向量 (3,)
+    返回:
+        反对称矩阵 (3,3)
+    """
     return np.array([
         [0, -p[2], p[1]],
         [p[2], 0, -p[0]],
@@ -76,7 +83,22 @@ def damped_pseudo_inverse(J, damping_factor = 0.01):
     return J_damped_pinv
 
 class CSM:
-    def __init__(self, L_10, L_20, L_r0, L_s0, step_size=0.01):
+    def __init__(
+            self, L_10, L_20, L_r0, L_s0, 
+            theta1_max=np.pi/2, 
+            theta2_max=2*np.pi/3,
+            step_size=0.01):
+        """
+        初始化连续体机器人模型
+        参数:
+            L_10: segment 1的长度 (m)
+            L_20: segment 2的长度 (m)
+            L_r0: rigid 段长度 (m)
+            L_s0: base  段长度 (m)
+            theta1_max: segment 1的最大弯曲角度 (rad)
+            theta2_max: segment 2的最大弯曲角度 (rad)
+            step_size: 每步时间间隔 (s)
+        """
         self.mode = 1
         self.step_size = step_size
         self.L_10 = L_10
@@ -85,15 +107,15 @@ class CSM:
         self.L_s0 = L_s0
         self.phi = 0
         self.L1 = 0
-        self.L2 = 0.2
+        self.L2 = self.L_20
         self.Lr = 0
         self.Ls = 0
         self.theta_1 = 0
         self.theta_2 = 0
         self.delta_1 = 0
         self.delta_2 = 0
-        self.kappa_10 = (2*np.pi/3) / L_10 # 假设能弯120度
-        self.kappa_20 = (2*np.pi/3) / L_20
+        self.kappa_10 = theta1_max / L_10 
+        self.kappa_20 = theta2_max / L_20
         # segment 1\2 的雅可比矩阵
         self.J_1v2 = None
         self.J_1w2 = None
@@ -123,9 +145,9 @@ class CSM:
         self.pose = np.array([0, 0, 0, 0, 0, 1])            # 末端执行器
         self.last_pose = np.array([0, 0, 0, 0, 0, 1])       # 上一时刻的末端执行器
         self.target_pose = np.array([0, 0, 0, 0, 0, 1])     # 目标位姿
-        self.target_delta_pos = np.array([0, 0, 0])
+        self.target_delta_pos = np.array([0, 0, 0])         
         self.target_delta_ori = np.array([0, 0, 0])
-        self.pre_delta_pos = np.array([0, 0, 0])
+        self.pre_delta_pos = np.array([0, 0, 0])            # 
         self.pre_delta_ori = np.array([0, 0, 0])
         self.base1_pos = np.array([0, 0, 0, 1])
         self.base1_ori = np.array([0, 0, 1])
@@ -143,7 +165,7 @@ class CSM:
         self.mode = 1
         self.phi = 0
         self.L1 = 0
-        self.L2 = 0.2
+        self.L2 = self.L_20
         self.Lr = 0
         self.Ls = 0
         self.theta_1 = 0
@@ -174,11 +196,6 @@ class CSM:
             [np.cos(delta), 0, -np.sin(delta) * np.sin(theta)],
             [0, 0, np.cos(theta) - 1]
         ])
-        # J_w3 = np.array([
-        #     [np.sin(-delta), 0, np.cos(-delta) * np.sin(theta)],
-        #     [np.cos(-delta), 0, -np.sin(-delta) * np.sin(theta)],
-        #     [0, 0, np.cos(theta) - 1]
-        # ])
 
         J_v2 = J_v3[:, [0, 2]]
         J_w2 = J_w3[:, [0, 2]]
@@ -187,7 +204,7 @@ class CSM:
     def get_jacobian_1(self):
         z_w = np.array([[0], [0], [1]])  # 假设 z_w 是沿着 z 轴的向量
 
-        # 横向拼接J1_v
+        # 横向拼接J1_v, J1第一行
         term1_v = -skew_symmetric_matrix(self.w_P_2b_2e) @ z_w
         term2_v = self.w_R_2b @ self.J_2v3
         self.J1_v = np.hstack([term1_v, term2_v])
@@ -253,6 +270,15 @@ class CSM:
         return
 
     def get_trans_mat(self, theta_t, L_t, delta_t):
+        """
+        计算单个连续体段的齐次变换矩阵
+        参数:
+            theta_t: 弯曲角度 (rad)
+            L_t: 段长度 (m)
+            delta_t: 偏转角度 (rad)
+        返回:
+            T: 齐次变换矩阵 (4,4)
+        """
         R_b_1 = np.array([  [0, np.cos(delta_t), np.sin(delta_t)],
                             [0, -np.sin(delta_t), np.cos(delta_t)],
                             [1, 0, 0]])
@@ -461,15 +487,17 @@ class CSM:
         target_orientation = self.target_pose[3:6]
         ax.quiver(target_position[0], target_position[1], target_position[2],
                 target_orientation[0], target_orientation[1], target_orientation[2],
-                length=0.1, color='g', linewidth=2, arrow_length_ratio=0.2)
+                length=0.03, color='g', linewidth=2, arrow_length_ratio=0.2)
 
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.set_zlabel('Z')
-        ax.set_box_aspect([1, 1, 1])
-        ax.set_xlim([-1, 1])
-        ax.set_ylim([-1, 1])
-        ax.set_zlim([0, 2])
+        ax.set_box_aspect([1, 1, 1]) # 保持坐标轴比例
+        total_length = self.L_10 + self.L_20 + self.L_r0 + self.L_s0
+        total_weight = total_length-self.L_s0
+        ax.set_xlim([-total_weight, total_weight])
+        ax.set_ylim([-total_weight, total_weight])
+        ax.set_zlim([0, total_length])
         plt.title('Manipulator Movement')
         plt.grid(True)
 
@@ -517,6 +545,7 @@ class CSM:
         elif current_mode == 3 and new_mode == 4:
             self.mode = 4
             self.Ls = self.L1 - self.L_10
+            self.L1 = self.L_10
             
         elif current_mode == 4 and new_mode == 3:
             self.mode = 3
@@ -587,6 +616,15 @@ class CSM:
 
 
 if __name__ == "__main__":
-    csm = CSM(0.5, 0.5, 0.15, 0.15, 0.01)
-    csm.target_pose = np.array([0.3, 0.3, 0.65, 1, 0, 0])
+    csm = CSM(0.04, 0.06, 0.02, 0.15, np.pi/2, 2*np.pi/3, 0.001)
+    csm.set_state(4, 0, 0.04, 0.06, 0.02, 0.10, np.pi/4, -np.pi/4, 0, 0)
+    # mode 3
+    # csm.set_state(3, 0.816, 0.0396, 0.06, 0.02, 0, 1.49, 0.171, 0.303, 1.172)
+    # mode 4
+    # csm.set_state(4, 3.673, 0.04, 0.06, 0.02, 0.07, 1.57, 0.032, 4.66, 2.78)
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    csm.plot_manipulator(ax)
+    plt.show()
+
     
