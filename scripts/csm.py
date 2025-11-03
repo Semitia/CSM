@@ -312,18 +312,18 @@ class CSM:
         return t
 
     def get_dot_PHI(self, v, w):
-        self.target_delta_pos = v * self.step_size
-        self.target_delta_ori = w * self.step_size
+        # self.target_delta_pos = v * self.step_size
+        # self.target_delta_ori = w * self.step_size
         if self.mode == 1:
             J1_v_p = damped_pseudo_inverse(self.J1_v)
             tem = (np.eye(4) - J1_v_p @ self.J1_v)
-            #  self.d_PHI = J1_v_p@v + tem@damped_pseudo_inverse(self.J1_w@tem)@(w - self.J1_w@J1_v_p@v)
-            self.d_PHI = J1_v_p @ v  # 只跟踪位置
+            self.d_PHI = J1_v_p@v + tem@damped_pseudo_inverse(self.J1_w@tem)@(w - self.J1_w@J1_v_p@v)
+            # self.d_PHI = J1_v_p @ v  # 只跟踪位置
         elif self.mode == 2:
             J2_v_p = damped_pseudo_inverse(self.J2_v)
             tem = (np.eye(4) - J2_v_p @ self.J2_v)
-            # self.d_PHI = J2_v_p@v + tem@damped_pseudo_inverse(self.J2_w@tem)@(w - self.J2_w@J2_v_p@v)
-            self.d_PHI = J2_v_p @ v
+            self.d_PHI = J2_v_p@v + tem@damped_pseudo_inverse(self.J2_w@tem)@(w - self.J2_w@J2_v_p@v)
+            # self.d_PHI = J2_v_p @ v
         elif self.mode == 3:
             J3_v_p = damped_pseudo_inverse(self.J3_v)
             tem = (np.eye(6) - J3_v_p @ self.J3_v)
@@ -334,7 +334,7 @@ class CSM:
             tem = (np.eye(6) - J4_v_p @ self.J4_v)
             self.d_PHI = J4_v_p@v + tem@damped_pseudo_inverse(self.J4_w@tem)@(w - self.J4_w@J4_v_p@v)
             # self.d_PHI = J4_v_p @ v
-        # print("pose: ", self.pose, ", d_PHI: ", self.d_PHI)
+        # print(", d_PHI: ", self.d_PHI)
 
     def set_state(self, mode, phi, L1, L2, Lr, Ls, theta_1, theta_2, delta_1, delta_2):
         self.mode = mode
