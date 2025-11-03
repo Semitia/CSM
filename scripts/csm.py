@@ -448,10 +448,11 @@ class CSM:
         # print(f"mode {self.mode} , pre_d_pos: [{', '.join([f'{x:.3f}' for x in self.pre_delta_pos])}] , delta_pos: [{', '.join([f'{x:.3f}' for x in delta_pos])}] , pre_d_ori: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , delta_ori: [{', '.join([f'{x:.3f}' for x in delta_ori])}]")
         print(f"mode {self.mode} , pre_omega: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , omega: [{', '.join([f'{x:.3f}' for x in delta_ori])}]", "d_PHI: ", self.d_PHI*self.step_size)
 
-    def plot_manipulator(self, ax):
+    def plot_manipulator(self, ax, reverse_color=False):
         init_pos = np.array([0, 0, 0, 1])
         init_ori = np.array([0, 0, 1])
-        ax.clear()  # 清除之前的绘图
+        if not reverse_color:
+            ax.clear()  # 清除之前的绘图
 
         lg = LineGenerator()
 
@@ -476,6 +477,8 @@ class CSM:
         # 使用 LineGenerator 绘制生成的线段
         # 预定义的颜色列表
         colors = ['r', 'g', 'b', 'y', 'm', 'c', 'orange', 'black', 'purple', 'brown']
+        if reverse_color:
+            colors = colors[::-1]
         for i, segment in enumerate(lg.segments):
             points = segment[0]
             # 倒序赋色：顶部（序号大）用列表前面的颜色，可保持颜色统一
@@ -624,6 +627,7 @@ if __name__ == "__main__":
     # csm.set_state(4, 3.673, 0.04, 0.06, 0.02, 0.07, 1.57, 0.032, 4.66, 2.78)
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
+    csm.target_pose = csm.pose
     csm.plot_manipulator(ax)
     plt.show()
 

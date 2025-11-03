@@ -4,8 +4,8 @@ from tqdm import tqdm
 from csm import CSM
 from csm_display import axis_angle_from_vectors, calculate_angular_velocity, get_random_target, normalize_vector, load_workspace_data
 
-success_data_path = "./data/successes_play.json"
-failure_data_path = "./data/failures_play.json"
+success_data_path = "./data/successes_play_2.json"
+failure_data_path = "./data/failures_play_2.json"
 
 def log(cnt, succ):
     tqdm.write(f"Finished {cnt} targets, {succ} successes, {cnt - succ} failures")
@@ -15,7 +15,7 @@ if __name__ == "__main__":
     target_cnt = 1
     succ_cnt = 0
     max_steps = 8000
-    total_targets = 10000  # 总目标数
+    total_targets = 2500  # 总目标数
     failures = []
     successes = []
     delta_t = 0.001
@@ -24,7 +24,7 @@ if __name__ == "__main__":
     v_lim = 0.2
     w_lim = 2
     workspace_data = load_workspace_data("./data/workspace_data.json")
-    mode, pose = get_random_target(workspace_data)
+    mode, pose, label_config = get_random_target(workspace_data)
     csm.target_pose = pose
     print("space:", mode, "target:", pose)
     raw_mode = 0
@@ -46,7 +46,7 @@ if __name__ == "__main__":
 
                 # 成功到达目标
                 if np.linalg.norm(csm.pose - csm.target_pose) < 1e-3:
-                    raw_mode, new_target_pose = get_random_target(workspace_data)
+                    raw_mode, new_target_pose, label_config = get_random_target(workspace_data)
                     csm.target_pose = new_target_pose
 
                     success_data = {
@@ -79,11 +79,12 @@ if __name__ == "__main__":
                         "Ls": csm.Ls,
                         "Lr": csm.Lr,
                         "steps_taken": step_count,
-                        "true_mode": raw_mode
+                        "true_mode": raw_mode,
+                        "label_config": label_config  # 参考正确目标配置
                     }
                     failures.append(failure_data)
                     csm.reset()
-                    raw_mode, new_target_pose = get_random_target(workspace_data)
+                    raw_mode, new_target_pose, label_config = get_random_target(workspace_data)
                     csm.target_pose = new_target_pose
                     step_count = 0
                     target_cnt += 1

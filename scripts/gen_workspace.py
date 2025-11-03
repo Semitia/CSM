@@ -109,8 +109,23 @@ def generate_workspace_data(csm, mode, num_samples=2500, show_progress=True, des
             csm.delta_2 = np.random.uniform(0, 2 * np.pi)
 
         csm.update()
-        pose = csm.pose.tolist()
-        workspace_data.append({"mode": mode, "pose": pose})
+        pose = csm.pose.copy().tolist()
+        config = {
+            "phi": csm.phi,
+            "theta_1": csm.theta_1,
+            "theta_2": csm.theta_2,
+            "delta_1": csm.delta_1,
+            "delta_2": csm.delta_2,
+            "L1": csm.L1,
+            "L2": csm.L2,
+            "Lr": csm.Lr,
+            "Ls": csm.Ls,
+        }
+        workspace_data.append({
+            "mode": mode,
+            "pose": pose,
+            "config": config
+        })
 
     return workspace_data
 
@@ -125,65 +140,6 @@ if __name__ == "__main__":
     fig = plt.figure(figsize=(20, 20))
     csm = CSM(0.04, 0.06, 0.02, 0.15, np.pi/2, 2*np.pi/3, 0.001)
     
-    # # 四张图分别绘制四个配置的工作空间
-    # ax1 = fig.add_subplot(221, projection='3d')
-    # ax2 = fig.add_subplot(222, projection='3d')
-    # ax3 = fig.add_subplot(223, projection='3d')
-    # ax4 = fig.add_subplot(224, projection='3d')
-    
-    # # Generate and plot workspace for each configuration
-    # workspace_C1 = generate_workspace(csm, mode=1)
-    # plot_workspace(ax1, workspace_C1, label='C1', color='r')
-    # ax1.set_title('Configuration 1')
-    
-    # workspace_C2 = generate_workspace(csm, mode=2)
-    # plot_workspace(ax2, workspace_C2, label='C2', color='g')
-    # ax2.set_title('Configuration 2')
-    
-    # workspace_C3 = generate_workspace(csm, mode=3)
-    # plot_workspace(ax3, workspace_C3, label='C3', color='b')
-    # ax3.set_title('Configuration 3')
-    
-    # workspace_C4 = generate_workspace(csm, mode=4)
-    # plot_workspace(ax4, workspace_C4, label='C4', color='y')
-    # ax4.set_title('Configuration 4')
-
-    # # 统一设置每个子图的视角和比例
-    # for ax in [ax1, ax2, ax3, ax4]:
-    #     ax.set_xlim([-0.1, 0.1])
-    #     ax.set_ylim([-0.1, 0.1])
-    #     ax.set_zlim([0, 0.25])
-    #     ax.view_init(elev=20, azim=30)  # 设置视角
-    #     ax.set_box_aspect([1, 1, 1])  # 确保各坐标轴比例一致
-
-    # fig.tight_layout()
-    # plt.show()
-
-    # # 一张图上绘制四个配置的工作空间
-    # ax = fig.add_subplot(111, projection='3d')
-    
-    # # Generate and plot workspace for each configuration
-    # workspace_C1 = generate_workspace(csm, mode=1)
-    # plot_workspace(ax, workspace_C1, label='C1', color='r')
-    
-    # workspace_C2 = generate_workspace(csm, mode=2)
-    # plot_workspace(ax, workspace_C2, label='C2', color='g')
-    
-    # workspace_C3 = generate_workspace(csm, mode=3)
-    # plot_workspace(ax, workspace_C3, label='C3', color='b')
-    
-    # workspace_C4 = generate_workspace(csm, mode=4)
-    # plot_workspace(ax, workspace_C4, label='C4', color='y')
-
-    # ax.set_xlabel('X')
-    # ax.set_ylabel('Y')
-    # ax.set_zlabel('Z')
-    # ax.set_xlim([-0.1, 0.1])
-    # ax.set_ylim([-0.1, 0.1])
-    # ax.set_zlim([0, 0.25])
-    # ax.legend()
-    # plt.show()
-
     # 生成并保存工作空间数据
     all_workspace_data = []
     num_samples_per_mode = [125000, 125000, 125000, 125000]  # 为每个模式指定样本数量

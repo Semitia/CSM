@@ -1,7 +1,5 @@
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
-matplotlib.rcParams['animation.ffmpeg_path'] = r"D:\TOOLS\ffmpeg-2025-10-27-git-68152978b5-essentials_build\bin\ffmpeg.exe"
 from matplotlib.animation import FuncAnimation
 from csm import CSM
 from csm_display import axis_angle_from_vectors, normalize_vector
@@ -167,6 +165,8 @@ plot_results()
 
 # 保存动画
 # print("Rendering video...")
+# import matplotlib
+# matplotlib.rcParams['animation.ffmpeg_path'] = r"D:\TOOLS\ffmpeg-2025-10-27-git-68152978b5-essentials_build\bin\ffmpeg.exe"
 # ani.save("./vedios/c1_c4.mp4", fps=24, dpi=150, writer="ffmpeg")
 # print("Saved video.")
 
