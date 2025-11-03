@@ -1,5 +1,7 @@
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
+matplotlib.rcParams['animation.ffmpeg_path'] = r"D:\TOOLS\ffmpeg-2025-10-27-git-68152978b5-essentials_build\bin\ffmpeg.exe"
 from matplotlib.animation import FuncAnimation
 from csm import CSM
 from csm_display import axis_angle_from_vectors, normalize_vector
@@ -18,10 +20,10 @@ csm = CSM(0.04, 0.06, 0.02, 0.15, np.pi / 2, 2 * np.pi / 3, delta_t)
 # 1️⃣ 设置起点与终点配置
 # ======================
 # 起点配置
-start_cfg = (4, 2.74, 0.04, 0.06, 0.02, 0.055, 1.13, 0.9, 0.53, 1.83)
-end_cfg   = (1, -0.95, 0, 0.026, 0, 0, 0, 0.5, 0, 0.03)
-# start_cfg = (1, 1.34, 0, 0.036, 0, 0, 0, 0.95, 0, 1.43)
-# end_cfg   = (4, 1.77, 0.04, 0.06, 0.02, 0.127, 1.09, 0.99, -0.8, 2.2)
+# start_cfg = (4, 2.74, 0.04, 0.06, 0.02, 0.055, 1.13, 0.9, 0.53, 1.83)
+# end_cfg   = (1, -0.95, 0, 0.026, 0, 0, 0, 0.5, 0, 0.03)
+start_cfg = (1, 1.34, 0, 0.036, 0, 0, 0, 0.95, 0, 1.43)
+end_cfg   = (4, 1.77, 0.04, 0.06, 0.02, 0.127, 1.09, 0.99, -0.8, 2.2)
 
 
 csm.set_state(*end_cfg)
@@ -38,7 +40,7 @@ orientation_errors = []
 theta1_vals, theta2_vals = [], []
 L1_vals, L2_vals = [], []
 
-max_iter = 3000
+max_iter = 1000
 tolerance = 1e-4
 
 fig = plt.figure(figsize=(10, 8))
@@ -63,8 +65,11 @@ def compute_errors(csm, target_pose):
 # ======================
 # 4️⃣ 动画帧更新函数
 # ======================
+finished = False
 def animate(i):
-    global csm
+    global csm, finished, ani
+    if finished:   
+        return
     csm.check_transition()
     csm.update()
     csm.update_jacobians()
@@ -96,13 +101,18 @@ def animate(i):
     # 判断收敛
     if pos_err < 1.0 and ang_err < 0.02:
         print(f"Converged at step {i}")
-        ani.event_source.stop()
-        plot_results()
+        finished = True 
+        if ani is not None and ani.event_source is not None:
+            ani.event_source.stop()
+        return
+    
     elif i >= max_iter - 1:
         print("Max iteration reached")
-        ani.event_source.stop()
-        plot_results()
-
+        finished = True 
+        if ani is not None and ani.event_source is not None:
+            ani.event_source.stop()
+        return
+        
 # ======================
 # 5️⃣ 绘制误差和变量曲线
 # ======================
@@ -150,7 +160,13 @@ def plot_results():
 # 6️⃣ 启动动画
 # ======================
 ani = FuncAnimation(fig, animate, frames=max_iter, interval=20)
-print("Rendering video...")
-ani.save("./vedios/c4_c1.mp4", fps=24, dpi=150, writer="ffmpeg")
-print("Saved video.")
+
+# 直接查看
 plt.show()
+plot_results()
+
+# 保存动画
+# print("Rendering video...")
+# ani.save("./vedios/c1_c4.mp4", fps=24, dpi=150, writer="ffmpeg")
+# print("Saved video.")
+

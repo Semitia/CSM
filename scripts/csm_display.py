@@ -119,7 +119,7 @@ successes = []
 v_lim = 0.2   # 线速度限制
 w_lim = 2     # 角速度限制
 draw_interval = 10
-
+max_targets = 10
 last_time = time.time()
 frame_times = []
 def animate(i, csm, ax):
@@ -170,6 +170,11 @@ def animate(i, csm, ax):
     #     print(f"平均FPS: {avg_fps:.2f}")
     #     frame_times.clear()
 
+    if target_cnt > max_targets:
+        print("已完成全部目标，停止动画。")
+        ani.event_source.stop()
+        return
+
 
 if __name__ == "__main__":
     fig = plt.figure(figsize=(10, 8))
@@ -181,7 +186,8 @@ if __name__ == "__main__":
     print("mode:", mode, "target:", pose)
 
     try:
-        ani = FuncAnimation(fig, animate, fargs=(csm, ax), frames=100, interval=17)
+        ani = FuncAnimation(fig, animate, fargs=(csm, ax), repeat=False)
+        
         plt.show()
         print("Finished")
     except KeyboardInterrupt:
