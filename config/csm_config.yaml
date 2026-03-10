@@ -1,0 +1,13 @@
+robot:
+  L_10: 0.04
+  L_20: 0.06
+  L_r0: 0.02
+  L_s0: 0.15
+  theta1_max: 1.5708   # pi/2
+  theta2_max: 2.0944   # 2*pi/3
+
+control:
+  delta_t: 0.001
+  v_lim: 0.2
+  w_lim: 2.0
+  max_steps: 8000

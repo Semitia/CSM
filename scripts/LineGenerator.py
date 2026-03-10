@@ -104,17 +104,17 @@ class LineGenerator:
             arc_points[i] = point
         self.segments.append((arc_points, p0, p1))
 
+    def draw(self, ax, reverse_color=False):
+        colors = self.colors[::-1] if reverse_color else self.colors
+        for i, segment in enumerate(self.segments):
+            color = colors[(len(self.segments) - 1 - i) % len(colors)]
+            ax.plot(segment[0][:, 0], segment[0][:, 1], segment[0][:, 2], color=color, linewidth=2)
+
     def plot_segments(self):
         fig = plt.figure(figsize=(20, 16))
         ax = fig.add_subplot(111, projection='3d')
-        
-        # 绘制各段
-        for i, segment in enumerate(self.segments):
-            points = segment[0]
-            # 倒序赋色：顶部（序号大）用列表前面的颜色，可保持颜色统一
-            color = self.colors[(len(self.segments) - 1 - i) % len(self.colors)]  # 使用模运算确保不会超出列表范围
-            ax.plot(points[:, 0], points[:, 1], points[:, 2], color=color, linewidth=2)
-        
+        self.draw(ax)
+
         # DEBUG
         for p0, m0, r0_vec, p1, m1, r1_vec in self.debug_info:
             t = np.linspace(-1, 1, 100)

@@ -3,6 +3,7 @@ import numpy as np
 from csm import CSM
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 def generate_workspace(csm, mode, num_samples=2000):
     csm.state_transition(csm.mode, mode)
@@ -133,8 +134,12 @@ def plot_workspace(ax, workspace, label, color):
     ax.scatter(workspace[:, 0], workspace[:, 1], workspace[:, 2], s=2, label=label, color=color)
 
 def save_workspace_to_file(filename, data):
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=4)
+    path = Path(filename)
+    # parents=True 表示连带父文件夹一起创建，exist_ok=True 表示如果已存在就不报错
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with path.open('w', encoding='utf-8') as f:
+        json.dump(data, f)
         
 if __name__ == "__main__":
     fig = plt.figure(figsize=(20, 20))

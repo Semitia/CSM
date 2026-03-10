@@ -1,8 +1,7 @@
-import json
 import numpy as np
 from tqdm import tqdm
 from csm import CSM
-from csm_display import axis_angle_from_vectors, calculate_angular_velocity, get_random_target, normalize_vector, load_workspace_data
+from utils import axis_angle_from_vectors, normalize_vector, load_workspace_data, get_random_target
 
 success_data_path = "./data/successes_play_2.json"
 failure_data_path = "./data/failures_play_2.json"
