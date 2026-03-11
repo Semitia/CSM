@@ -1,3 +1,7 @@
+"""
+Module: visualizer.py
+Description: Visualizer class using LineGenerator to plot the CSM model and its movement.
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 from .line_generator import LineGenerator

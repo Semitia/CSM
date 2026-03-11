@@ -1,3 +1,7 @@
+"""
+Module: LTI_resp_laplace.py
+Description: Template for calculating state response of LTI systems using Laplace transform (SymPy based).
+"""
 # 通用状态响应计算模板（SymPy 版）
 import sympy as sp
 

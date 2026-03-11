@@ -1,3 +1,7 @@
+"""
+Module: run_experiment.py
+Description: Main script to run the experiment, generating random targets and tracking success/failure.
+"""
 import json
 import numpy as np
 from tqdm import tqdm

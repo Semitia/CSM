@@ -1,3 +1,7 @@
+"""
+Module: confirm.py
+Description: Script to verify or confirm kinematic calculations using SymPy.
+"""
 import numpy as np
 import sympy as sp
 

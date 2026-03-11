@@ -1,3 +1,7 @@
+"""
+Module: analyse_single.py
+Description: Script to analyze a single failure case from recorded data.
+"""
 import json
 import threading
 import numpy as np

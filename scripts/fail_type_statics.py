@@ -1,3 +1,7 @@
+"""
+Module: fail_type_statics.py
+Description: Script to analyze and categorize failure types from failure data.
+"""
 import json
 import numpy as np
 import pandas as pd

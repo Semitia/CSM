@@ -1,3 +1,7 @@
+"""
+Module: fail_type_vis.py
+Description: Script to visualize failure cases using radar charts to show parameter limits.
+"""
 import json
 import numpy as np
 import matplotlib.pyplot as plt

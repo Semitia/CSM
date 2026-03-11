@@ -1,3 +1,7 @@
+"""
+Module: plot_workspace.py
+Description: Script to plot the generated workspace points in 3D.
+"""
 import json
 import numpy as np
 import matplotlib.pyplot as plt

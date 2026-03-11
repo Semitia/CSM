@@ -1,3 +1,7 @@
+"""
+Module: utils.py
+Description: Utility functions for vector operations, angular velocity calculation, and data loading.
+"""
 import json
 import random
 import numpy as np

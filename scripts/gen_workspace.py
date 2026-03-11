@@ -1,3 +1,7 @@
+"""
+Module: gen_workspace.py
+Description: Script to generate workspace points for different modes of the CSM.
+"""
 import json
 import numpy as np
 from csm.model import CSM

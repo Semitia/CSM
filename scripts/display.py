@@ -1,3 +1,7 @@
+"""
+Module: display.py
+Description: Script to visualize and animate the CSM model reaching targets.
+"""
 import time
 import numpy as np
 from csm.model import CSM

@@ -1,3 +1,7 @@
+"""
+Module: run_traj.py
+Description: Script to run a specific trajectory between a start and end configuration.
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation

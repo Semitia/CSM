@@ -1,3 +1,7 @@
+"""
+Module: model.py
+Description: Core CSM (Continuum Sugery Manipulator) model class defining kinematics, jacobians, and state updates.
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 from .line_generator import LineGenerator

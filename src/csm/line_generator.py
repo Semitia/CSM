@@ -1,3 +1,7 @@
+"""
+Module: line_generator.py
+Description: Helper class to generate 3D lines and arcs for visualization purposes.
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 

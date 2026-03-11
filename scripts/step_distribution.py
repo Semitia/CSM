@@ -1,3 +1,7 @@
+"""
+Module: step_distribution.py
+Description: Script to plot the distribution of steps taken for successful trials.
+"""
 import json
 import threading
 import numpy as np

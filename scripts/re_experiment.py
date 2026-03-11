@@ -1,3 +1,7 @@
+"""
+Module: re_experiment.py
+Description: Script to replay and analyze specific failure cases from recorded data.
+"""
 import json
 import numpy as np
 from csm.model import CSM
