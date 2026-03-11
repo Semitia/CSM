@@ -6,16 +6,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 def find_intersection(p1, d1, p2, d2):
+    # 计算两个方向向量的叉乘
     cross_d1_d2 = np.cross(d1, d2)
     norm_cross_d1_d2 = np.linalg.norm(cross_d1_d2)
     if norm_cross_d1_d2 < 1e-8:
         print("射线平行或共线，无交点")
         return None
+    
+    # 计算线性方程组的右侧常数项
     diff_p = p2 - p1
+    # 计算方程组的解，即参数 t 和 s
     t = np.linalg.det([diff_p, d2, cross_d1_d2]) / norm_cross_d1_d2**2
     s = np.linalg.det([diff_p, d1, cross_d1_d2]) / norm_cross_d1_d2**2
+    
+    # 计算交点坐标
     intersection1 = p1 + t * d1
     intersection2 = p2 + s * d2
+    # 验证交点是否相同（即射线相交）
     if np.allclose(intersection1, intersection2):
         return intersection1
     else:
@@ -44,6 +51,7 @@ class LineGenerator:
         self.segments.append((curve_points, p0, p1))
 
     def add_arc(self, p0, p1, m0, m1, num_points=15):
+        # 绘制的时候，点点之间会直线连接，num_points 少一点也无妨
         p0 = np.array(p0, dtype=np.float64)
         p1 = np.array(p1, dtype=np.float64)
         m0 = np.array(m0, dtype=np.float64)
@@ -57,7 +65,7 @@ class LineGenerator:
         r1_vec = np.cross(m1, normal)
         center = find_intersection(p0, r0_vec, p1, r1_vec)
         if center is None:
-            self.debug_info.append((p0, m0, r0_vec, p1, m1, r1_vec))
+            self.debug_info.append((p0, m0, r0_vec, p1, m1, r1_vec)) # 保存调试信息
             print("Arc center not found")
             return
         radius = np.linalg.norm(center - p0)

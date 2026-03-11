@@ -12,6 +12,9 @@ class Visualizer:
         self.lg = LineGenerator()
 
     def plot(self, csm, ax):
+        """
+        使用 LineGenerator 绘制 CSM 的当前状态
+        """
         init_pos = np.array([0, 0, 0, 1])
         init_ori = np.array([0, 0, 1])
         ax.clear()

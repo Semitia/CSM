@@ -5,28 +5,23 @@ Description: Core CSM (Continuum Sugery Manipulator) model class defining kinema
 import numpy as np
 import matplotlib.pyplot as plt
 from .line_generator import LineGenerator
-from .utils import calculate_angular_velocity
-
-
-def skew_symmetric_matrix(p):
-    return np.array([
-        [0, -p[2], p[1]],
-        [p[2], 0, -p[0]],
-        [-p[1], p[0], 0]
-    ])
-
-
-def damped_pseudo_inverse(J, damping_factor=0.01):
-    m, n = J.shape
-    if m >= n:
-        return np.linalg.inv(J.T @ J + (damping_factor**2) * np.eye(n)) @ J.T
-    else:
-        return J.T @ np.linalg.inv(J @ J.T + (damping_factor**2) * np.eye(m))
+from .utils import calculate_angular_velocity, skew_symmetric_matrix, damped_pseudo_inverse
 
 
 class CSM:
     def __init__(self, L_10, L_20, L_r0, L_s0,
                  theta1_max=np.pi/2, theta2_max=2*np.pi/3, step_size=0.01):
+        """
+        初始化连续体机器人模型
+        参数:
+            L_10: segment 1的长度 (m)
+            L_20: segment 2的长度 (m)
+            L_r0: rigid 段长度 (m)
+            L_s0: base  段长度 (m)
+            theta1_max: segment 1的最大弯曲角度 (rad)
+            theta2_max: segment 2的最大弯曲角度 (rad)
+            step_size: 每步时间间隔 (s)
+        """
         self.mode = 1
         self.step_size = step_size
         self.L_10 = L_10
@@ -137,6 +132,15 @@ class CSM:
         self._mode_J[4]["w"] = np.hstack([z_w, np.zeros((3, 1)), self.w_R_1b @ J1["w2"], self.w_R_2b @ J2["w2"]])
 
     def get_trans_mat(self, theta_t, L_t, delta_t):
+        """
+        计算单个连续体段的齐次变换矩阵
+        参数:
+            theta_t: 弯曲角度 (rad)
+            L_t: 段长度 (m)
+            delta_t: 偏转角度 (rad)
+        返回:
+            T: 齐次变换矩阵 (4,4)
+        """
         R_b_1 = np.array([[0, np.cos(delta_t), np.sin(delta_t)],
                            [0, -np.sin(delta_t), np.cos(delta_t)],
                            [1, 0, 0]])
@@ -157,6 +161,10 @@ class CSM:
         return T
 
     def get_w_T(self):
+        """
+        计算phi产生的齐次变换矩阵,从世界坐标系到stem
+        1,2模式是2b, 3,4模式是1b
+        """
         c, s = np.cos(self.phi), np.sin(self.phi)
         return np.array([[c, -s, 0, 0],
                          [s,  c, 0, 0],
@@ -349,6 +357,10 @@ class CSM:
         return max(L_t, theta_t / kappa_t0), min(theta_t, kappa_t0 * L_t)
 
     def step(self):
+        """
+        根据输出PHI更新状态
+        模拟现实世界运动情况
+        """
         mode_mapping = {
             1: ['phi', 'theta_2', 'L2', 'delta_2'],
             2: ['phi', 'Lr', 'theta_2', 'delta_2'],

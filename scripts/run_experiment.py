@@ -77,6 +77,7 @@ if __name__ == "__main__":
                     if target_cnt % 200 == 0:
                         log(target_cnt, succ_cnt)
 
+        # 保存结果
         if successes:
             with open(success_data_path, "w") as f:
                 json.dump(successes, f, indent=4)
