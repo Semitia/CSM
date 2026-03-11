@@ -1,8 +1,9 @@
+import json
 import numpy as np
-from csm import CSM
+from csm.model import CSM
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from utils import axis_angle_from_vectors, normalize_vector, load_workspace_data, get_random_target
+from csm.utils import axis_angle_from_vectors, normalize_vector, load_workspace_data, get_random_target
 
 def log(cnt, succ):
     print(f"Finished {cnt} targets, {succ} successes, {cnt - succ} failures")

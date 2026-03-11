@@ -2,8 +2,8 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 from math import pi
-from csm import CSM
-from csm_display import normalize_vector, calculate_angular_velocity
+from csm.model import CSM
+from csm.utils import normalize_vector, calculate_angular_velocity
 
 # ==== 参数范围 ====
 LIMITS = {

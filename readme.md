@@ -1,36 +1,109 @@
 # CSM
 
+Continuum Segment Manipulator (CSM) —— 连续段机械臂运动学建模与控制仿真。
+
+## 项目结构
+
+```
+CSM/
+├── src/
+│   └── csm/                    # 核心 Python 包
+│       ├── __init__.py         # 包入口，导出 CSM / Visualizer / LineGenerator
+│       ├── model.py            # CSM 机械臂运动学模型与控制器（核心类）
+│       ├── line_generator.py   # 3D 曲线/弧线生成工具（LineGenerator 类）
+│       ├── visualizer.py       # 基于 LineGenerator 的机械臂可视化（Visualizer 类）
+│       └── utils.py            # 通用工具函数（角速度计算、数据加载等）
+│
+├── scripts/                    # 独立运行脚本
+│   ├── gen_workspace.py        # 生成工作空间采样数据（输出 data/workspace_data.json）
+│   ├── run_experiment.py       # 批量目标跟踪实验，记录成功/失败数据
+│   ├── display.py              # 实时动画演示机械臂目标跟踪过程
+│   ├── run_traj.py             # 单段轨迹演示，绘制误差与关节变量曲线
+│   ├── re_experiment.py        # 重放失败实验数据进行复现分析
+│   ├── plot_workspace.py       # 可视化工作空间点云（凸包线框/曲面）
+│   ├── analyse_single.py       # 动画回放单条失败案例
+│   ├── fail_type_statics.py    # 失败案例参数统计与分类分析
+│   ├── fail_type_vis.py        # 失败案例雷达图可视化与机械臂对比展示
+│   ├── step_distribution.py    # 成功案例步数分布直方图统计
+│   └── confirm.py              # 雅可比矩阵符号推导验证（SymPy）
+│
+├── config/
+│   └── csm_config.yaml         # 机器人物理参数与控制参数配置
+│
+├── utils/
+│   └── LTI_resp_laplace.py     # 独立工具：线性时不变系统拉普拉斯响应计算
+│
+├── data/                       # 实验数据（运行脚本后生成，不纳入版本控制）
+│   ├── workspace_data.json
+│   ├── successes_*.json
+│   └── failures_*.json
+│
+├── imgs/                       # 文档图片
+├── pyproject.toml              # 项目构建配置
+├── requirements.txt            # 依赖列表
+├── .gitignore
+└── README.md
+```
+
+## 安装
+
+```bash
+pip install -e .
+```
+
+## 快速开始
+
+```python
+from csm import CSM
+import numpy as np
+
+csm = CSM.from_config("config/csm_config.yaml")
+# 或直接传参
+csm = CSM(L_10=0.04, L_20=0.06, L_r0=0.02, L_s0=0.15)
+```
+
+## 运行脚本
+
+所有脚本在项目根目录下执行：
+
+```bash
+# 生成工作空间数据（需先运行）
+python scripts/gen_workspace.py
+
+# 实时动画演示
+python scripts/display.py
+
+# 单段轨迹演示
+python scripts/run_traj.py
+
+# 批量实验
+python scripts/run_experiment.py
+```
+
+## 配置文件
+
+[`config/csm_config.yaml`](config/csm_config.yaml) 包含机器人物理参数与控制参数：
+
+```yaml
+robot:
+  L_10: 0.04      # 第一段最大长度 (m)
+  L_20: 0.06      # 第二段最大长度 (m)
+  L_r0: 0.02      # 刚性连接段长度 (m)
+  L_s0: 0.15      # 滑动段最大长度 (m)
+  theta1_max: 1.5708
+  theta2_max: 2.0944
+
+control:
+  delta_t: 0.001  # 控制步长 (s)
+  v_lim: 0.2      # 线速度限制 (m/s)
+  w_lim: 2.0      # 角速度限制 (rad/s)
+  max_steps: 8000
+```
+
 ## ToDo
+- [ ] 3.4mm手术工具实际参数
+- [ ] dexterous workspace 实验
+- [ ] CAD文件支持
 
-- [x] 代入真实物理参数
-- [x] 控制器有点问题
-- [x] 统计实验,分析脚本
-- [x] 曲线
-- [x] 分析实验
-- [x] 目标位姿的配置信息也保存下来，便于分析
-- [ ] display experiment代码重复，需要逐步封装
-- [ ] 计算效率，update等函数中有大量冗余的矩阵乘法来实现齐次变换
-- [ ] CSM配置使用配置文件管理和读入
-- [ ] 构建为标准的 python package 工程
-- [ ] 大量雅可比矩阵等成员使用直接命名的方式，比较臃肿，尝试优化为高维数据
-- [ ] 两种限制
-- [ ] CSM和LineGenerator绘制代码重复，需优化复用
 
-## 疑惑
 
-1. 雅可比矩阵
-![alt text](/imgs/image.png)
-等式右边应该是$J_{(tv3)},J_{(t\omega3)}$吧
-
-2. {1b}获取
-![alt text](/imgs/image-1.png)
-应该是$\hat{z}_w$ 而非 $\hat{z}_s$。
-
-3. J1 & J2
-![alt text](/imgs/image-2.png)
-![alt text](/imgs/image-3.png)
-是$p^{1b}_{2e}$么？
-
-4. 速度雅可比矩阵
-![alt text](/imgs/image-5.png)
-![alt text](/imgs/image-6.png)

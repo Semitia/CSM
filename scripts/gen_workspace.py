@@ -1,6 +1,6 @@
 import json
 import numpy as np
-from csm import CSM
+from csm.model import CSM
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from pathlib import Path

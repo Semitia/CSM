@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=61"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "csm"
@@ -9,5 +9,5 @@ requires-python = ">=3.8"
 dependencies = ["numpy", "matplotlib", "tqdm", "pyyaml"]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["scripts*"]
+where = ["src"]
+include = ["csm*"]

@@ -1,7 +1,7 @@
 import json
 import threading
 import numpy as np
-from csm import CSM
+from csm.model import CSM
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 

@@ -1,7 +1,8 @@
 import numpy as np
-from LineGenerator import LineGenerator
-from utils import calculate_angular_velocity
 import matplotlib.pyplot as plt
+from .line_generator import LineGenerator
+from .utils import calculate_angular_velocity
+
 
 def skew_symmetric_matrix(p):
     return np.array([
@@ -10,12 +11,14 @@ def skew_symmetric_matrix(p):
         [-p[1], p[0], 0]
     ])
 
+
 def damped_pseudo_inverse(J, damping_factor=0.01):
     m, n = J.shape
     if m >= n:
         return np.linalg.inv(J.T @ J + (damping_factor**2) * np.eye(n)) @ J.T
     else:
         return J.T @ np.linalg.inv(J @ J.T + (damping_factor**2) * np.eye(m))
+
 
 class CSM:
     def __init__(self, L_10, L_20, L_r0, L_s0,
@@ -37,20 +40,17 @@ class CSM:
         self.delta_2 = 0
         self.kappa_10 = theta1_max / L_10
         self.kappa_20 = theta2_max / L_20
-        # 雅可比矩阵（字典化）
         self._seg_J = {
             1: {"v2": None, "w2": None, "v3": None, "w3": None},
             2: {"v2": None, "w2": None, "v3": None, "w3": None},
         }
         self._mode_J = {m: {"v": None, "w": None} for m in (1, 2, 3, 4)}
-        # 旋转、平移矩阵
         self.w_P_1b_2e = None
         self.w_P_2b_2e = None
         self.w_R_1b = None
         self.w_R_2b = None
         self.b1_P_1e_2e = None
         self.d_PHI = np.zeros(4)
-        # 关键坐标位姿
         self.pose = np.array([0, 0, 0, 0, 0, 1], dtype=float)
         self.last_pose = np.array([0, 0, 0, 0, 0, 1], dtype=float)
         self.target_pose = np.array([0, 0, 0, 0, 0, 1], dtype=float)
@@ -368,13 +368,3 @@ class CSM:
         r, c = cfg["robot"], cfg["control"]
         return cls(r["L_10"], r["L_20"], r["L_r0"], r["L_s0"],
                    r["theta1_max"], r["theta2_max"], c["delta_t"])
-
-
-if __name__ == "__main__":
-    csm = CSM(0.04, 0.06, 0.02, 0.15, np.pi/2, 2*np.pi/3, 0.001)
-    csm.set_state(4, 0, 0.04, 0.06, 0.02, 0.10, np.pi/4, -np.pi/4, 0, 0)
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    csm.target_pose = csm.pose
-    csm.plot_manipulator(ax)
-    plt.show()
