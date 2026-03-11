@@ -5,6 +5,7 @@ Description: Script to visualize failure cases using radar charts to show parame
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from math import pi
 from csm.model import CSM
 from csm.utils import normalize_vector, calculate_angular_velocity
@@ -57,7 +58,8 @@ def draw_radar(ax, failure, limits, title="Parameter Radar"):
 # ==== 绘制单个失败样例 ====
 def show_failure(failure):
     # 初始化 CSM
-    csm = CSM(0.04, 0.06, 0.02, 0.15, np.pi/2, 2*np.pi/3, 0.001)
+    config_path = Path("./config/csm_config1.yaml")
+    csm = CSM.from_config(config_path)
     csm.set_state(
         failure["mode"], failure["phi"], failure["L1"], failure["L2"],
         failure["Lr"], failure["Ls"], failure["theta_1"],
@@ -77,7 +79,7 @@ def show_failure(failure):
     label_config = failure.get("label_config", None)
     if label_config:
         print("Drawing label configuration for comparison.")
-        csm_ref = CSM(0.04, 0.06, 0.02, 0.15, np.pi/2, 2*np.pi/3, 0.001)
+        csm_ref = CSM.from_config(config_path)
         # 注意：label_config 来自 workspace_data["config"]，字段一致
         csm_ref.set_state(
             failure["true_mode"], label_config["phi"], label_config["L1"], label_config["L2"],

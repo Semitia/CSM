@@ -102,6 +102,7 @@ control:
 
 ## ToDo
 - [ ] 3.4mm手术工具实际参数
+- [x] 添加末端工具
 - [ ] dexterous workspace 实验
 - [ ] CAD文件支持
 

@@ -83,6 +83,7 @@ class LineGenerator:
     def draw(self, ax, reverse_color=False):
         colors = self.colors[::-1] if reverse_color else self.colors
         for i, segment in enumerate(self.segments):
+            # 从后往前
             color = colors[(len(self.segments) - 1 - i) % len(colors)]
             ax.plot(segment[0][:, 0], segment[0][:, 1], segment[0][:, 2], color=color, linewidth=2)
 

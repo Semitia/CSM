@@ -66,8 +66,11 @@ def animate(i, csm, ax):
 if __name__ == "__main__":
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
-    csm = CSM(0.04, 0.06, 0.02, 0.15, np.pi/2, 2*np.pi/3, delta_t)
+    
+    config_path = Path("./config/csm_config1.yaml")
+    csm = CSM.from_config(config_path)
     workspace_data = load_workspace_data("./data/workspace_data.json")
+    
     mode, pose, _ = get_random_target(workspace_data)
     csm.target_pose = pose
     print("mode:", mode, "target:", pose)

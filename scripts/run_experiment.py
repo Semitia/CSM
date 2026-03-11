@@ -5,11 +5,12 @@ Description: Main script to run the experiment, generating random targets and tr
 import json
 import numpy as np
 from tqdm import tqdm
+from pathlib import Path
 from csm.model import CSM
 from csm.utils import axis_angle_from_vectors, normalize_vector, load_workspace_data, get_random_target
 
-success_data_path = "./data/successes_play_2.json"
-failure_data_path = "./data/failures_play_2.json"
+success_data_path = "./data/successes_play.json"
+failure_data_path = "./data/failures_play.json"
 
 def log(cnt, succ):
     tqdm.write(f"Finished {cnt} targets, {succ} successes, {cnt - succ} failures")
@@ -19,12 +20,14 @@ if __name__ == "__main__":
     target_cnt = 1
     succ_cnt = 0
     max_steps = 8000
-    total_targets = 250
+    total_targets = 1000
     failures = []
     successes = []
     delta_t = 0.001
 
-    csm = CSM(0.04, 0.06, 0.02, 0.15, np.pi/2, 2*np.pi/3, delta_t)
+    config_path = Path("./config/csm_config1.yaml")
+    csm = CSM.from_config(config_path)
+
     v_lim = 0.2
     w_lim = 2
     workspace_data = load_workspace_data("./data/workspace_data.json")

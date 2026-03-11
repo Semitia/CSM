@@ -9,7 +9,7 @@ from .utils import calculate_angular_velocity, skew_symmetric_matrix, damped_pse
 
 
 class CSM:
-    def __init__(self, L_10, L_20, L_r0, L_s0,
+    def __init__(self, L_10, L_20, L_r0, L_s0, L_tool,
                  theta1_max=np.pi/2, theta2_max=2*np.pi/3, step_size=0.01):
         """
         初始化连续体机器人模型
@@ -18,6 +18,7 @@ class CSM:
             L_20: segment 2的长度 (m)
             L_r0: rigid 段长度 (m)
             L_s0: base  段长度 (m)
+            L_tool: tool  长度 (m)
             theta1_max: segment 1的最大弯曲角度 (rad)
             theta2_max: segment 2的最大弯曲角度 (rad)
             step_size: 每步时间间隔 (s)
@@ -28,6 +29,7 @@ class CSM:
         self.L_20 = L_20
         self.L_r0 = L_r0
         self.L_s0 = L_s0
+        self.L_tool = L_tool
         self.phi = 0
         self.L1 = 0
         self.L2 = self.L_20
@@ -263,7 +265,12 @@ class CSM:
             self.b1_P_1e_2e = np.linalg.inv(R0) @ (self.end2_pos[:3] - self.end1_pos[:3])
             self.w_P_1b_2e = self.end2_pos[:3] - self.base1_pos[:3]
 
-        self.pose = np.block([self.end2_pos[:3], self.end2_ori])
+        # 计算工具末端在世界坐标系下的位置
+        r_tool = self.end2_ori * self.L_tool
+        self.tool_pos = self.end2_pos[:3] + r_tool
+        # 更新 pose 为工具末端的位姿
+        self.pose = np.block([self.tool_pos, self.end2_ori])
+        # self.pose = np.block([self.end2_pos[:3], self.end2_ori])
 
     def debug(self):
         Jv = self._mode_J[self.mode]["v"]
@@ -298,6 +305,10 @@ class CSM:
             lg.add_line(self.end1_pos[:3], self.base2_pos[:3])
             lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
 
+        # 绘制末端工具直线
+        if self.L_tool > 0:
+            lg.add_line(self.end2_pos[:3], self.tool_pos)
+
         lg.draw(ax, reverse_color=reverse_color)
 
         tp, to = self.target_pose[:3], self.target_pose[3:6]
@@ -305,7 +316,7 @@ class CSM:
                   length=0.03, color='g', linewidth=2, arrow_length_ratio=0.2)
         ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
         ax.set_box_aspect([1, 1, 1])
-        total_length = self.L_10 + self.L_20 + self.L_r0 + self.L_s0
+        total_length = self.L_10 + self.L_20 + self.L_r0 + self.L_s0 + self.L_tool
         total_weight = total_length - self.L_s0
         ax.set_xlim([-total_weight, total_weight])
         ax.set_ylim([-total_weight, total_weight])
@@ -352,6 +363,14 @@ class CSM:
         v3, w3, v2, w2 = self.get_jacobians(self.theta_2, self.L2, self.delta_2)
         self._seg_J[2] = {"v3": v3, "w3": w3, "v2": v2, "w2": w2}
         getattr(self, f"get_jacobian_{self.mode}")()
+        
+        if self.L_tool > 0:
+            r_tool = self.tool_pos - self.end2_pos[:3]
+            Jv = self._mode_J[self.mode]["v"]
+            Jw = self._mode_J[self.mode]["w"]
+            # 仅在内存中就地更新当前模式的线速度雅可比，不破坏原有结构
+            self._mode_J[self.mode]["v"] = Jv - skew_symmetric_matrix(r_tool) @ Jw
+
 
     def apply_constraints(self, L_t, theta_t, kappa_t0):
         return max(L_t, theta_t / kappa_t0), min(theta_t, kappa_t0 * L_t)
@@ -379,8 +398,22 @@ class CSM:
     @classmethod
     def from_config(cls, path):
         import yaml
-        with open(path) as f:
+        from pathlib import Path
+        
+        # 兼容传入字符串或 Path 对象
+        config_path = Path(path)
+        with config_path.open('r', encoding='utf-8') as f:
             cfg = yaml.safe_load(f)
-        r, c = cfg["robot"], cfg["control"]
-        return cls(r["L_10"], r["L_20"], r["L_r0"], r["L_s0"],
-                   r["theta1_max"], r["theta2_max"], c["delta_t"])
+        r = cfg["robot"]
+        
+        # cls 就代表 CSM 这个类本身，这里就等同于 return CSM(...)
+        return cls(
+            L_10=r["L_10"],
+            L_20=r["L_20"],
+            L_r0=r["L_r0"],
+            L_s0=r["L_s0"],
+            L_tool=r["L_tool"],
+            theta1_max=r["theta1_max"],
+            theta2_max=r["theta2_max"],
+            step_size=r["step_size"]
+        )

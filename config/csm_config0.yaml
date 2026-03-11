@@ -1,10 +1,12 @@
-robot:
+robot:  # 无工具
   L_10: 0.04
   L_20: 0.06
   L_r0: 0.02
   L_s0: 0.15
+  L_tool: 0.00
   theta1_max: 1.5708   # pi/2
   theta2_max: 2.0944   # 2*pi/3
+  step_size: 0.001
 
 control:
   delta_t: 0.001

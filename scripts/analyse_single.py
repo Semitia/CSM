@@ -6,12 +6,13 @@ import json
 import threading
 import numpy as np
 from csm.model import CSM
+from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 
 # 分析失败数据
-filename = "./data/failures_replay.json"
+filename = "./data/failures_play_2.json"
 with open(filename, 'r') as f:
     data = json.load(f)
 print("failure_len:", len(data))
@@ -85,8 +86,9 @@ def animate(i, csm, ax):
     if np.linalg.norm(csm.pose - csm.target_pose) < 0.05:
         print("Reached target")
 
-csm = CSM(0.5, 0.5, 0.15, 0.15, 0.01)
-failure = data[40]
+config_path = Path("./config/csm_config1.yaml")
+csm = CSM.from_config(config_path)
+failure = data[1]
 Ls = failure["Ls"]
 Lr = failure["Lr"]
 L1 = failure["L1"]
