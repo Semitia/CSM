@@ -3,6 +3,10 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 import copy
 from WorkspaceDiscretizer import WorkspaceDiscretizer
+import pinocchio as pin
+import example_robot_data as erd
+import meshcat.geometry as mg
+import time
 
 class CapabilityMapAnalyzer:
     def __init__(self, filepath, discretizer=None):

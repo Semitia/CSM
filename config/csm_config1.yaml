@@ -6,10 +6,9 @@ robot:  # 有工具
   L_tool: 0.02
   theta1_max: 1.0472   # 60度
   theta2_max: 1.5708   # 90度
-  step_size: 0.001
+  delta_t: 0.001
 
 control:
-  delta_t: 0.001
   v_lim: 0.2
   w_lim: 2.0
   max_steps: 8000

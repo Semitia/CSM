@@ -9,7 +9,7 @@ from scipy.spatial import ConvexHull
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 # ===== 配置 =====
-json_path = "./data/workspace_data.json"
+json_path = "./data/workspace_data_3.4mm.json"
 RENDER_MODE = "wire"   # ← 'wire' | 'surface' | 'both'
 SEPARATE_PLOTS = True  # ← 是否分成四个子图绘制
 
@@ -91,18 +91,18 @@ def main():
             draw_shell(ax, pts, MODE_COLORS[m], label=MODE_LABELS[m], mode=RENDER_MODE)
             ax.set_title(MODE_LABELS[m])
             ax.set_box_aspect([1, 1, 1])
-            ax.grid(False)
-            ax.set_proj_type('ortho')
-            ax.view_init(elev=0, azim=90)
+            # ax.grid(False)
+            # ax.set_proj_type('ortho')
+            # ax.view_init(elev=0, azim=90)
             # === 每个子图都用相同的坐标范围 ===
             if all_pts.size:
                 ax.set_xlim(mins[0], maxs[0])
                 ax.set_ylim(mins[1], maxs[1])
                 ax.set_zlim(mins[2], maxs[2])
             # 背景透明优化
-            for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-                axis.pane.set_facecolor((1, 1, 1, 0))
-                axis.pane.fill = False
+            # for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+            #     axis.pane.set_facecolor((1, 1, 1, 0))
+            #     axis.pane.fill = False
         plt.tight_layout()
 
 
@@ -126,12 +126,12 @@ def main():
             ax.set_zlim(mins[2], maxs[2])
 
         ax.legend(loc="upper right", frameon=False)
-        ax.set_proj_type('ortho')
-        ax.view_init(elev=0, azim=90)
-        ax.grid(False)
-        for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-            axis.pane.set_facecolor((1, 1, 1, 0))
-            axis.pane.fill = False
+        # ax.set_proj_type('ortho')
+        # ax.view_init(elev=0, azim=90)
+        # ax.grid(False)
+        # for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        #     axis.pane.set_facecolor((1, 1, 1, 0))
+        #     axis.pane.fill = False
         plt.tight_layout()
 
     plt.show()

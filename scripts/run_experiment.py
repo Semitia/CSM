@@ -3,6 +3,7 @@ Module: run_experiment.py
 Description: Main script to run the experiment, generating random targets and tracking success/failure.
 """
 import json
+import yaml
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
@@ -20,17 +21,29 @@ if __name__ == "__main__":
     target_cnt = 1
     succ_cnt = 0
     max_steps = 8000
-    total_targets = 1000
+    total_targets = 500
     failures = []
     successes = []
     delta_t = 0.001
 
-    config_path = Path("./config/csm_config1.yaml")
-    csm = CSM.from_config(config_path)
-
+    config_path = Path("./config/csm_config_3.4mm.yaml")
+    
+    # Set defaults
     v_lim = 0.2
     w_lim = 2
-    workspace_data = load_workspace_data("./data/workspace_data.json")
+    
+    # Load control parameters from config
+    with open(config_path, "r", encoding="utf-8") as f:
+        config_data = yaml.safe_load(f)
+    
+    if "control" in config_data:
+        ctrl = config_data["control"]
+        if "v_lim" in ctrl: v_lim = ctrl["v_lim"]
+        if "w_lim" in ctrl: w_lim = ctrl["w_lim"]
+        if "max_steps" in ctrl: max_steps = ctrl["max_steps"]
+
+    csm = CSM.from_config(config_path)
+    workspace_data = load_workspace_data("./data/workspace_data_3.4mm.json")
     mode, pose, label_config = get_random_target(workspace_data)
     csm.target_pose = pose
     print("space:", mode, "target:", pose)

@@ -10,7 +10,7 @@ from .utils import calculate_angular_velocity, skew_symmetric_matrix, damped_pse
 
 class CSM:
     def __init__(self, L_10, L_20, L_r0, L_s0, L_tool,
-                 theta1_max=np.pi/2, theta2_max=2*np.pi/3, step_size=0.01):
+                 theta1_max=np.pi/2, theta2_max=2*np.pi/3, delta_t=0.01):
         """
         初始化连续体机器人模型
         参数:
@@ -21,10 +21,10 @@ class CSM:
             L_tool: tool  长度 (m)
             theta1_max: segment 1的最大弯曲角度 (rad)
             theta2_max: segment 2的最大弯曲角度 (rad)
-            step_size: 每步时间间隔 (s)
+            delta_t: 每步时间间隔 (s)
         """
         self.mode = 1
-        self.step_size = step_size
+        self.delta_t = delta_t
         self.L_10 = L_10
         self.L_20 = L_20
         self.L_r0 = L_r0
@@ -281,11 +281,11 @@ class CSM:
         Jw = self._mode_J[self.mode]["w"]
         if Jv is None or Jw is None:
             return
-        self.pre_delta_pos = Jv @ self.d_PHI * self.step_size
+        self.pre_delta_pos = Jv @ self.d_PHI * self.delta_t
         self.pre_delta_ori = Jw @ self.d_PHI
-        delta_ori = calculate_angular_velocity(self.last_pose[3:], self.pose[3:], self.step_size)
+        delta_ori = calculate_angular_velocity(self.last_pose[3:], self.pose[3:], self.delta_t)
         self.last_pose = self.pose
-        print(f"mode {self.mode} , pre_omega: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , omega: [{', '.join([f'{x:.3f}' for x in delta_ori])}]", "d_PHI: ", self.d_PHI * self.step_size)
+        print(f"mode {self.mode} , pre_omega: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , omega: [{', '.join([f'{x:.3f}' for x in delta_ori])}]", "d_PHI: ", self.d_PHI * self.delta_t)
 
     def plot_manipulator(self, ax, reverse_color=False):
         init_pos = np.array([0, 0, 0, 1])
@@ -314,10 +314,13 @@ class CSM:
             lg.add_line(self.end2_pos[:3], self.tool_pos)
 
         lg.draw(ax, reverse_color=reverse_color)
-
+        
+        total_length = self.L_10 + self.L_20 + self.L_r0 + self.L_s0 + self.L_tool
+        total_weight = total_length - self.L_s0
+        # 绘制目标位姿箭头
         tp, to = self.target_pose[:3], self.target_pose[3:6]
         ax.quiver(tp[0], tp[1], tp[2], to[0], to[1], to[2],
-                  length=0.03, color='g', linewidth=2, arrow_length_ratio=0.2)
+                  length=0.15*total_length, color='g', linewidth=2, arrow_length_ratio=0.6)
         ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
         ax.set_box_aspect([1, 1, 1])
         total_length = self.L_10 + self.L_20 + self.L_r0 + self.L_s0 + self.L_tool
@@ -337,7 +340,7 @@ class CSM:
             self.state_transition(2, 3)
         elif self.mode == 3 and self.L1 < 0:
             self.state_transition(3, 2)
-        elif self.mode == 3 and self.L1 > self.L_10:
+        elif self.mode == 3 and self.L1 > self.L_10 and self.L_s0 > 0:
             self.state_transition(3, 4)
         elif self.mode == 4 and self.Ls < 0:
             self.state_transition(4, 3)
@@ -390,9 +393,12 @@ class CSM:
             4: ['phi', 'Ls', 'theta_1', 'delta_1', 'theta_2', 'delta_2'],
         }
         for i, attr in enumerate(mode_mapping[self.mode]):
-            setattr(self, attr, getattr(self, attr) + self.d_PHI[i] * self.step_size)
+            setattr(self, attr, getattr(self, attr) + self.d_PHI[i] * self.delta_t)
 
-        self.Ls = min(self.Ls, self.L_s0)
+        if self.L_s0 > 0:
+            self.Ls = min(self.Ls, self.L_s0)
+        else: # 没有base段，最多到mode3
+            self.L1 = min(self.L1, self.L_10)
         if abs(self.theta_2) > self.kappa_20 * self.L2:
             self.theta_2 = self.kappa_20 * self.L2 * np.sign(self.theta_2)
         if self.mode in (3, 4) and abs(self.theta_1) > self.kappa_10 * self.L1:
@@ -418,5 +424,5 @@ class CSM:
             L_tool=r["L_tool"],
             theta1_max=r["theta1_max"],
             theta2_max=r["theta2_max"],
-            step_size=r["step_size"]
+            delta_t=r["delta_t"]
         )

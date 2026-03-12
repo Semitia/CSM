@@ -3,6 +3,7 @@ Module: display.py
 Description: Script to visualize and animate the CSM model reaching targets.
 """
 import time
+import yaml
 import numpy as np
 from csm.model import CSM
 import matplotlib.pyplot as plt
@@ -67,9 +68,21 @@ if __name__ == "__main__":
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
     
-    config_path = Path("./config/csm_config1.yaml")
+    config_path = Path("./config/csm_config_3.4mm.yaml")
+    
+    # Load control parameters from config
+    with open(config_path, "r", encoding="utf-8") as f:
+        config_data = yaml.safe_load(f)
+    
+    if "control" in config_data:
+        ctrl = config_data["control"]
+        if "v_lim" in ctrl: v_lim = ctrl["v_lim"]
+        if "w_lim" in ctrl: w_lim = ctrl["w_lim"]
+        if "max_steps" in ctrl: max_steps = ctrl["max_steps"]
+        
     csm = CSM.from_config(config_path)
-    workspace_data = load_workspace_data("./data/workspace_data.json")
+    
+    workspace_data = load_workspace_data("./data/workspace_data_3.4mm.json")
     
     mode, pose, _ = get_random_target(workspace_data)
     csm.target_pose = pose
