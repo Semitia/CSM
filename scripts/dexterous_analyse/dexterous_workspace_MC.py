@@ -12,11 +12,12 @@ from pathlib import Path
 # ==========================================
 @dataclass
 class Config:
-    VOXEL_SIZE: float = 0.005          # 体素边长 (米)，建议根据实际工作空间大小调整，如 5mm
+    VOXEL_SIZE: float = 0.05          # 体素边长 (米)，建议根据实际工作空间大小调整，如 5mm
     SPHERE_N_DIRS: int = 100           # 球面均匀采样的朝向数量 (斐波那契网格)
     ROLL_BINS: int = 12                # 绕轴旋转 360° 划分的区间数 (12 bins = 30°/bin)
     MIN_POINTS_PER_VOXEL: int = 10     # 统计学阈值，过滤噪声体素
-    DATA_PATH: str = "./data/workspace_data.json"
+    # DATA_PATH: str = "./data/workspace_data.json"
+    DATA_PATH: str = "./data/workspace_data_6dof.json"
     OUTPUT_PATH: str = "./data/dexterous_workspace_analysis.csv"
 
 # ==========================================
@@ -61,12 +62,6 @@ def main():
     print(f"Loading data from {cfg.DATA_PATH}...")
     with open(cfg.DATA_PATH, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    
-    # # 提取位置和旋转矩阵并向量化
-    # if len(data) == 0:
-    #     raise ValueError("No data samples found in the JSON file.")
-    # if len(data) != len(data[0]['pose']) or len(data) != len(data[0]['rotation_matrix']):
-    #     raise ValueError("Mismatch between number of pose samples and rotation matrices.")
     
     positions = np.array([item['pose'][:3] for item in data])
     rotations = np.array([item['rotation_matrix'] for item in data])
@@ -200,54 +195,163 @@ import matplotlib.pyplot as plt
 # ==========================================
 # Phase 8: 三维可视化 (Visualization)
 # ==========================================
-def visualize_workspace(csv_path, arrow_length=0.005, step=1):
+# def visualize_workspace(csv_path, arrow_length=0.005, step=1):
+#     """
+#     使用 Matplotlib 可视化能力图
+#     - csv_path: 分析结果的 CSV 路径
+#     - arrow_length: 圆锥主轴箭头的长度
+#     - step: 降采样步长（若体素太多，设为 2 或 3 可以稀疏化箭头，避免画面太乱）
+#     """
+#     print(f"Loading data for visualization from {csv_path}...")
+#     df = pd.read_csv(csv_path)
+    
+#     fig = plt.figure(figsize=(12, 10))
+#     ax = fig.add_subplot(111, projection='3d')
+    
+#     # 提取中心坐标与 RDI (灵巧度指数)
+#     x = df['center_x'].values
+#     y = df['center_y'].values
+#     z = df['center_z'].values
+#     rdi = df['mean_RDI'].values
+    
+#     # 1. 绘制体素中心，使用 jet 或 viridis 颜色映射表示 RDI 大小
+#     # cmap='jet' 与论文中冷暖色调图类似：红色表示灵巧度低，蓝色表示灵巧度高 (或者相反，可自行调整)
+#     scatter = ax.scatter(x, y, z, c=rdi, cmap='jet_r', s=15, alpha=0.8, edgecolors='none')
+    
+#     # 添加颜色条
+#     cbar = fig.colorbar(scatter, ax=ax, shrink=0.5, aspect=15)
+#     cbar.set_label('Mean RDI (Rotational Dexterity Index)')
+    
+#     # 2. 绘制圆锥的主轴方向 (使用 Quiver 矢量图)
+#     u = df['cone_axis_x'].values
+#     v = df['cone_axis_y'].values
+#     w = df['cone_axis_z'].values
+    
+#     ax.quiver(
+#         x[::step], y[::step], z[::step], 
+#         u[::step], v[::step], w[::step], 
+#         length=arrow_length, normalize=True, color='black', alpha=0.6, linewidth=0.5
+#     )
+    
+#     # 3. 坐标轴设置
+#     ax.set_xlabel('X Axis (m)')
+#     ax.set_ylabel('Y Axis (m)')
+#     ax.set_zlabel('Z Axis (m)')
+#     ax.set_title('Robot Dexterous Workspace Capability Map')
+    
+#     # 调整视角和比例
+#     ax.view_init(elev=30, azim=45)
+    
+#     # 强制各坐标轴比例一致，避免工作空间被拉伸变形
+#     max_range = np.array([x.max()-x.min(), y.max()-y.min(), z.max()-z.min()]).max() / 2.0
+#     mid_x = (x.max()+x.min()) * 0.5
+#     mid_y = (y.max()+y.min()) * 0.5
+#     mid_z = (z.max()+z.min()) * 0.5
+#     ax.set_xlim(mid_x - max_range, mid_x + max_range)
+#     ax.set_ylim(mid_y - max_range, mid_y + max_range)
+#     ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    
+#     plt.tight_layout()
+#     plt.show()
+
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+def plot_3d_cone(ax, apex, axis_vec, half_angle_rad, height, color_val, cmap='jet'):
     """
-    使用 Matplotlib 可视化能力图
+    在 Matplotlib 中绘制一个真实的 3D 圆锥
+    """
+    # 限制圆锥最大开角，避免显示成一个平面
+    half_angle_rad = min(half_angle_rad, np.pi/2.5) 
+    
+    # 1. 构建局部圆锥点
+    r_base = height * np.tan(half_angle_rad)
+    theta = np.linspace(0, 2 * np.pi, 12)
+    z = np.linspace(0, height, 2)
+    theta_grid, z_grid = np.meshgrid(theta, z)
+    
+    x_grid = (z_grid / height) * r_base * np.cos(theta_grid)
+    y_grid = (z_grid / height) * r_base * np.sin(theta_grid)
+    
+    # 2. 计算旋转矩阵，将圆锥从局部 Z 轴旋转到给定的 axis_vec
+    axis_vec = np.array(axis_vec)
+    axis_vec = axis_vec / np.linalg.norm(axis_vec)
+    z_axis = np.array([0, 0, 1])
+    
+    v = np.cross(z_axis, axis_vec)
+    c = np.dot(z_axis, axis_vec)
+    s = np.linalg.norm(v)
+    
+    if s < 1e-6: # 方向几乎平行
+        R = np.eye(3) if c > 0 else -np.eye(3)
+    else:
+        v_skew = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+        R = np.eye(3) + v_skew + (v_skew @ v_skew) * ((1 - c) / (s**2))
+        
+    # 3. 对坐标进行旋转和平移
+    shape = x_grid.shape
+    points = np.stack([x_grid.flatten(), y_grid.flatten(), z_grid.flatten()])
+    transformed_points = (R @ points) + np.array(apex).reshape(3, 1)
+    
+    X = transformed_points[0, :].reshape(shape)
+    Y = transformed_points[1, :].reshape(shape)
+    Z = transformed_points[2, :].reshape(shape)
+    
+    # 获取颜色
+    cm = plt.get_cmap(cmap)
+    color = cm(color_val)
+    
+    # 绘制曲面
+    ax.plot_surface(X, Y, Z, color=color, alpha=0.6, linewidth=0, antialiased=False)
+
+def visualize_workspace(csv_path, cone_height=0.01, display_fraction=0.05):
+    """
+    使用 Matplotlib 可视化能力图 (包含真实圆锥)
     - csv_path: 分析结果的 CSV 路径
-    - arrow_length: 圆锥主轴箭头的长度
-    - step: 降采样步长（若体素太多，设为 2 或 3 可以稀疏化箭头，避免画面太乱）
+    - cone_height: 圆锥的高度
+    - display_fraction: 降采样比例 (例如 0.05 表示只随机画 5% 的体素，防止太卡)
     """
     print(f"Loading data for visualization from {csv_path}...")
     df = pd.read_csv(csv_path)
     
+    # 全局随机降采样，防卡顿核心
+    n_total = len(df)
+    n_display = max(1, int(n_total * display_fraction))
+    df = df.sample(n=n_display, random_state=42).reset_index(drop=True)
+    print(f"Downsampled to {n_display} voxels ({display_fraction*100}%) for rendering.")
+    
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
     
-    # 提取中心坐标与 RDI (灵巧度指数)
     x = df['center_x'].values
     y = df['center_y'].values
     z = df['center_z'].values
     rdi = df['mean_RDI'].values
     
-    # 1. 绘制体素中心，使用 jet 或 viridis 颜色映射表示 RDI 大小
-    # cmap='jet' 与论文中冷暖色调图类似：红色表示灵巧度低，蓝色表示灵巧度高 (或者相反，可自行调整)
-    scatter = ax.scatter(x, y, z, c=rdi, cmap='jet', s=15, alpha=0.8, edgecolors='none')
-    
-    # 添加颜色条
+    # 绘制基础散点 (Voxel Center)
+    scatter = ax.scatter(x, y, z, c=rdi, cmap='jet', s=10, alpha=0.8, edgecolors='none')
     cbar = fig.colorbar(scatter, ax=ax, shrink=0.5, aspect=15)
     cbar.set_label('Mean RDI (Rotational Dexterity Index)')
     
-    # 2. 绘制圆锥的主轴方向 (使用 Quiver 矢量图)
-    u = df['cone_axis_x'].values
-    v = df['cone_axis_y'].values
-    w = df['cone_axis_z'].values
+    # 绘制 3D 圆锥
+    print("Rendering 3D cones, this might take a moment...")
+    for idx, row in df.iterrows():
+        apex = [row['center_x'], row['center_y'], row['center_z']]
+        axis = [row['cone_axis_x'], row['cone_axis_y'], row['cone_axis_z']]
+        angle = row['cone_half_angle_rad']
+        color_val = row['mean_RDI'] # Normalize color (assuming RDI is 0~1)
+        
+        plot_3d_cone(ax, apex, axis, angle, cone_height, color_val, cmap='jet')
     
-    ax.quiver(
-        x[::step], y[::step], z[::step], 
-        u[::step], v[::step], w[::step], 
-        length=arrow_length, normalize=True, color='black', alpha=0.6, linewidth=0.5
-    )
-    
-    # 3. 坐标轴设置
+    # 坐标轴设置
     ax.set_xlabel('X Axis (m)')
     ax.set_ylabel('Y Axis (m)')
     ax.set_zlabel('Z Axis (m)')
-    ax.set_title('Robot Dexterous Workspace Capability Map')
+    ax.set_title(f'Dexterous Workspace (Rendering {n_display} Cones)')
     
-    # 调整视角和比例
-    ax.view_init(elev=30, azim=45)
-    
-    # 强制各坐标轴比例一致，避免工作空间被拉伸变形
+    # 强制各坐标轴比例一致
     max_range = np.array([x.max()-x.min(), y.max()-y.min(), z.max()-z.min()]).max() / 2.0
     mid_x = (x.max()+x.min()) * 0.5
     mid_y = (y.max()+y.min()) * 0.5
@@ -269,4 +373,5 @@ if __name__ == "__main__":
     # 2. 调用可视化
     cfg = Config()
     # step=2 表示每隔一个体素画一个箭头，避免箭头过于密集变成黑乎乎的一团
-    visualize_workspace(cfg.OUTPUT_PATH, arrow_length=cfg.VOXEL_SIZE * 1.5, step=2)
+    # visualize_workspace(cfg.OUTPUT_PATH, arrow_length=cfg.VOXEL_SIZE * 1.5, step=2)
+    visualize_workspace("./data/dexterous_workspace_analysis.csv", cone_height=0.01, display_fraction=0.05)

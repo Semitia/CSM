@@ -100,11 +100,27 @@ control:
   max_steps: 8000
 ```
 
+## pinocchio
+
+安装
+conda install pinocchio -c conda-forge
+安装机器人模型数据包
+conda install -c conda-forge example-robot-data
+补装数据配套的的 Python loaders 包
+conda install -c conda-forge example-robot-data-loaders
+在 Pinocchio 中，最主流且对 Python 最友好的可视化工具是 Meshcat。它可以在你的浏览器里直接渲染出 3D 模型，轻量且不需要复杂的 GUI 依赖。
+为了运行完整的示例，你需要先安装 Meshcat。请在你的 csm 环境中运行以下命令：
+conda install -c conda-forge meshcat-python
+
 ## ToDo
-- [ ] 3.4mm手术工具实际参数
+
+- [x] 3.4mm手术工具实际参数
+- [ ] 跑3.4mm，确认ls为0时是否有问题
 - [x] 添加末端工具
-- [ ] dexterous workspace 实验
-- [ ] CAD文件支持
+- [ ] 普通串联机械臂 dexterous workspace 复现
+- [ ] CSM 对接 pinocchio 求解框架
+- [ ] CSM dexterous workspace 实验
+- [ ] CSM 兼容 pinocchio CAD 构建与可视化
 
 
 
