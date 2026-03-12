@@ -208,6 +208,7 @@ class CSM:
             self.base2_ori = R0 @ init_ori
             self.end2_pos = T01 @ init_pos
             self.end2_ori = T01[:3, :3] @ init_ori
+            self.rotation_matrix = T01[:3, :3]
             self.w_P_2b_2e = self.end2_pos[:3] - self.base2_pos[:3]
             self.w_R_2b = R0
 
@@ -220,6 +221,7 @@ class CSM:
             self.base2_ori = T01[:3, :3] @ init_ori
             self.end2_pos = T012 @ init_pos
             self.end2_ori = T012[:3, :3] @ init_ori
+            self.rotation_matrix = T012[:3, :3]
             self.w_P_2b_2e = self.end2_pos[:3] - self.base2_pos[:3]
             self.w_R_2b = R0
 
@@ -238,6 +240,7 @@ class CSM:
             self.base2_ori = T012[:3, :3] @ init_ori
             self.end2_pos = T0123 @ init_pos
             self.end2_ori = T0123[:3, :3] @ init_ori
+            self.rotation_matrix = T0123[:3, :3]
             self.w_R_1b = R0
             self.w_R_2b = R0 @ T1[:3, :3]
             self.b1_P_1e_2e = np.linalg.inv(R0) @ (self.end2_pos[:3] - self.end1_pos[:3])
@@ -260,6 +263,7 @@ class CSM:
             self.base2_ori = T0123[:3, :3] @ init_ori
             self.end2_pos = T01234 @ init_pos
             self.end2_ori = T01234[:3, :3] @ init_ori
+            self.rotation_matrix = T01234[:3, :3]
             self.w_R_1b = R0
             self.w_R_2b = R0 @ T2[:3, :3]
             self.b1_P_1e_2e = np.linalg.inv(R0) @ (self.end2_pos[:3] - self.end1_pos[:3])
@@ -370,7 +374,6 @@ class CSM:
             Jw = self._mode_J[self.mode]["w"]
             # 仅在内存中就地更新当前模式的线速度雅可比，不破坏原有结构
             self._mode_J[self.mode]["v"] = Jv - skew_symmetric_matrix(r_tool) @ Jw
-
 
     def apply_constraints(self, L_t, theta_t, kappa_t0):
         return max(L_t, theta_t / kappa_t0), min(theta_t, kappa_t0 * L_t)

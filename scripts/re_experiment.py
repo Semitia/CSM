@@ -34,7 +34,8 @@ if __name__ == "__main__":
     max_steps = 800  # 设置达到目标的最大步数
     failures = []
     successes = []
-    csm = CSM(0.5, 0.5, 0.15, 0.15, 0.01)
+    config_path = Path("./config/csm_config1.yaml")
+    csm = CSM.from_config(config_path)
     filename = "failures_play.json"
     with open(filename, 'r') as f:
         data = json.load(f)

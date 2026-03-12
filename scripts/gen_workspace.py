@@ -63,6 +63,7 @@ def generate_workspace_data(csm, mode, num_samples=2500, show_progress=True, des
         workspace_data.append({
             "mode": mode,
             "pose": pose,
+            "rotation_matrix": csm.rotation_matrix.tolist(),
             "config": config
         })
 
