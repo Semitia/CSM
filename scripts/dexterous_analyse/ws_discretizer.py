@@ -8,11 +8,11 @@ class WsDiscretizer:
     """
     def __init__(self, arm_length, l_c=0.05, n_p=200, delta_o=30.0):
         # 1. 初始化基本参数
-        # 边界盒边长 l_ws 为机械臂长度的两倍 [cite: 193]
+        # 边界盒边长 l_ws 为机械臂长度的两倍
         self.l_ws = 2.0 * arm_length 
-        # 体素边长 l_c，通常设为 0.05m (50mm) [cite: 198]
+        # cell 边长 l_c
         self.l_c = float(l_c)
-        # 沿每个维度的体素数量 n_c [cite: 209]
+        # 沿每个维度的体素数量 n_c 
         self.n_c = math.ceil(self.l_ws / self.l_c)
         
         # 姿态离散化参数
@@ -24,9 +24,18 @@ class WsDiscretizer:
         # 2. 预计算离散化姿态集 O_s [cite: 281]
         self.sphere_points = self._generate_spiral_points()
         self.discrete_frames = self._generate_discrete_frames()
-        
+
         # 3. 计算总离散化体素数 N_s 
         self.total_discrete_frames = self.n_c**3 * self.n_p * self.m_o
+
+        # print 离散化器配置
+        print(f"WsDiscretizer 配置:")
+        print(f"  机械臂长度: {self.l_ws / 2.0}")
+        print(f"  cell 边长: {self.l_c}")
+        print(f"  单维度体素数量: {self.n_c}")
+        print(f"  姿态离散点数: {self.n_p}")
+        print(f"  姿态离散方向数: {self.m_o}")
+        print(f"  总离散化体素数: {self.total_discrete_frames}")
 
     def to_config(self):
         """

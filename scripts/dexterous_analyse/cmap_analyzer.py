@@ -32,6 +32,7 @@ class CmapAnalyzer:
             config = data['config'].item()
             print("发现内嵌配置，正在自动创建 WsDiscretizer...")
             self.discretizer = WsDiscretizer.from_config(config)
+
         else:
             raise ValueError("未提供 discretizer 实例，且数据文件中未包含配置信息！")
 
@@ -48,9 +49,6 @@ class CmapAnalyzer:
         self.D = (self.R / self.n_p) * 100.0
         # 打印关键指标
         print("=== 能力图关键指标 ===")
-        print(f"总姿态数 n_p = {self.n_p}")
-        print(f"总朝向数 m_o = {self.m_o}")
-        print(f"体素空间尺寸: {self.cmap.shape[:3]}")
         print(f"整体可达率 D  (任意姿态可达): 均值={np.mean(self.D):.2f}%, 最大={np.max(self.D):.2f}%, 最小={np.min(self.D):.2f}%")
         print(f"方向可达率 D_o(任意方向可达): 均值={np.mean(self.D_o):.2f}%, 最大={np.max(self.D_o):.2f}%, 最小={np.min(self.D_o):.2f}%")
         print("====================")
@@ -174,69 +172,108 @@ class CmapAnalyzer:
         print("提示：在菜单选择 'View' -> 'Slicing Planes' 开启实时剖切")
         ps.show()
 
-    def visualize_open3d(self, metric='D_o', threshold=1.0):
-        """
-        使用 Open3D 展示能力图：更稳定的工业级点云渲染
-        """
-        # 1. 提取数据
-        data_matrix = self.D_o if metric == 'D_o' else self.D
-        indices = np.argwhere(data_matrix >= threshold)
-        
-        if len(indices) == 0:
-            print("Error: No voxels found above threshold.")
-            return
+    def visualize_open3d(self, metric='D_o', threshold=1.0, 
+                            slice_axis=None, slice_index=None):
+            """
+            使用 Open3D 展示能力图（体素网格）：支持剖面显示。
+            
+            Args:
+                slice_axis (str): 剖切轴。可以是 'x', 'y', 或 'z'。默认为 None (显示全部)。
+                slice_index (int): 剖切面在对应轴上的体素索引（即像素坐标）。
+            """
+            # 1. 提取数据
+            data_matrix = self.D_o if metric == 'D_o' else self.D
+            indices = np.argwhere(data_matrix >= threshold)
+            
+            if len(indices) == 0:
+                print("Error: No voxels found above threshold.")
+                return
 
-        # 2. 坐标转换 (矢量化)
-        # 使用你定义的转换逻辑
-        offset = (1.0 - self.discretizer.n_c / 2.0)
-        centers = (indices + offset) * self.discretizer.l_c - (self.discretizer.l_c / 2.0)
-        
-        # 3. 颜色映射 (Color Mapping)
-        # 将数值映射到 0-1 范围，并应用颜色表
-        values = data_matrix[indices[:, 0], indices[:, 1], indices[:, 2]]
-        normalized_values = (values - values.min()) / (values.max() - values.min() + 1e-6)
-        
-        # 使用 jet 或 viridis 颜色表
-        cmap = plt.get_cmap('jet_r')
-        colors = cmap(normalized_values)[:, :3] # 只要 RGB
+            # --- 新增：剖面处理逻辑 ---
+            if slice_axis and slice_index is not None:
+                # 确定要过滤的轴的索引 (x=0, y=1, z=2)
+                axis_map = {'x': 0, 'y': 1, 'z': 2}
+                if slice_axis not in axis_map:
+                    print(f"[警告] 无效的剖切轴 '{slice_axis}'，请使用 'x', 'y' 或 'z'。将显示全部。")
+                else:
+                    axis_idx = axis_map[slice_axis]
+                    
+                    # 检查索引是否有效
+                    max_index = data_matrix.shape[axis_idx]
+                    if slice_index < 0 or slice_index >= max_index:
+                        print(f"[警告] 剖切索引 {slice_index} 超出轴 '{slice_axis}' 的范围 (0-{max_index-1})。将显示全部。")
+                    else:
+                        # **核心：创建一个布尔掩码，只保留特定轴上具有特定索引的点**
+                        mask = indices[:, axis_idx] == slice_index
+                        indices = indices[mask] # 应用掩码，过滤点
+                        
+                        if len(indices) == 0:
+                            print(f"在 '{slice_axis}' 轴上，体素坐标为 {slice_index} 的剖面没有任何点超过阈值。")
+                            return
+                        print(f"--- 剖切中: 已沿 '{slice_axis}' 轴在索引 {slice_index} 处生成剖面 ---")
 
-        # 4. 创建 Open3D 点云对象
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(centers)
-        pcd.colors = o3d.utility.Vector3dVector(colors)
+            # --- 2-3. 坐标转换和颜色映射保持不变 ---
+            # ... (保持原有的代码不变，它们会自动处理过滤后的 indices)
+            # 使用你定义的转换逻辑
+            offset = (1.0 - self.discretizer.n_c / 2.0)
+            centers = (indices + offset) * self.discretizer.l_c - (self.discretizer.l_c / 2.0)
+            
+            # 应用颜色表
+            values = data_matrix[indices[:, 0], indices[:, 1], indices[:, 2]]
+            # 强制使用绝对映射：假设可达率的范围是 0 到 100
+            # 如果你的数据最大值不是 100，可以将这里的 vmax 修改为实际理论最大值
+            vmin = 0.0
+            vmax = 100.0 
+            normalized_values = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
+            
+            # 使用标准的 jet 颜色表
+            cmap = plt.get_cmap('jet_r')
+            colors = cmap(normalized_values)[:, :3]
 
-        # 5. 可视化配置
-        print(f"--- Open3D 启动中: 渲染 {len(centers)} 个点 ---")
-        print("操作提示：[H] 帮助, [+/-] 调整点的大小, [Shift + +/-] 调整法线长度")
-        
-        vis = o3d.visualization.Visualizer()
-        vis.create_window(window_name="Capability Map - Open3D", width=1280, height=720)
-        
-        # 添加几何体
-        vis.add_geometry(pcd)
-        
-        # 获取渲染设置并调整点的大小
-        # 如果你觉得间隙大，就调大这里的 point_size
-        opt = vis.get_render_option()
-        opt.point_size = 5.0  # 这里的单位是像素，可以手动调大直到间隙消失
-        opt.background_color = np.asarray([0.1, 0.1, 0.1]) # 深灰色背景
-        
-        # 添加一个坐标轴辅助观察
-        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=self.discretizer.l_ws/4, origin=[0, 0, 0])
-        vis.add_geometry(axes)
-        
-        vis.run()
-        vis.destroy_window()
+            # --- 4. 转换并创建体素网格 ---
+            # 创建 Open3D 点云对象 (先创建点云作为数据载体)
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(centers)
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+
+            # 核心修改：以物理尺寸 (米) 将点云转换为体素网格
+            voxel_size = self.discretizer.l_c * 0.8
+            voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
+
+            # --- 5. 可视化配置保持不变 ---
+            # ... (保持原有的代码不变)
+            print(f"--- Open3D 启动中: 渲染 {len(centers)} 个体素 ---")
+            
+            vis = o3d.visualization.Visualizer()
+            vis.create_window(window_name="Capability Map - VoxelGrid Section", width=1280, height=720)
+            
+            # 添加几何体时，添加体素网格而不是点云
+            vis.add_geometry(voxel_grid)
+            
+            # 获取渲染设置 (体素渲染不需要调 point_size 了)
+            opt = vis.get_render_option()
+            if opt is not None:
+                opt.background_color = np.asarray([0.1, 0.1, 0.1]) # 深灰色背景
+            
+            # 添加坐标轴辅助观察
+            axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=self.discretizer.l_ws/4, origin=[0, 0, 0])
+            vis.add_geometry(axes)
+            
+            vis.run()
+            vis.destroy_window()
+
 
 if __name__ == "__main__":
-    file_path = "./data/csm_fk_cmap_multi.npz"
+    # file_path = "./data/csm_fk_cmap_multi.npz"
+    file_path = "./data/ur5_fk_cmap_multi.npz"
     analyzer = CmapAnalyzer(filepath=file_path)
     
     # 可视化
     # analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
     #                           threshold=0.1, slice_axis='y', 
     #                           cut_half=False, alpha=0.3) 
-    # analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
-    #                           threshold=0.1, slice_axis='y', 
-    #                           cut_half=False, alpha=0.3) 
-    analyzer.visualize_open3d(metric='D', threshold=0.1)                           
+    analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
+                              threshold=0.1, slice_axis='y', 
+                              cut_half=False, alpha=0.3) 
+    # analyzer.visualize_open3d(metric='D', 
+    #                          threshold=0.1 )                       
