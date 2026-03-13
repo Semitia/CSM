@@ -4,7 +4,7 @@ import example_robot_data as erd
 import multiprocessing as mp
 import ctypes
 from tqdm import tqdm
-from WorkspaceDiscretizer import WorkspaceDiscretizer
+from ws_discretizer import WsDiscretizer
 
 def worker_task(worker_id, num_samples, discretizer, robot_name, tcp_frame_name, shared_array_base, cmap_shape):
     import numpy as np
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     with open(config_path, "r") as f:
         config = json.load(f)
         
-    discretizer = WorkspaceDiscretizer.from_config(config)
+    discretizer = WsDiscretizer.from_config(config)
     
     # 2. 计算需要开辟的共享内存大小
     # 假设 cmap 的 shape 是 (n_c, n_c, n_c, n_p, m_o)

@@ -3,14 +3,14 @@ import pinocchio as pin
 import example_robot_data as erd
 from tqdm import tqdm  # 用于显示进度条
 from pathlib import Path
-from WorkspaceDiscretizer import WorkspaceDiscretizer
+from ws_discretizer import WsDiscretizer
 import os
 
-class CapabilityMapBuilder:
+class CmapBuilderIK:
     def __init__(self, discretizer, robot_name='ur5', tcp_frame_name=None):
         """
         初始化能力图构建器。
-        :param discretizer: WorkspaceDiscretizer 实例
+        :param discretizer: WsDiscretizer 实例
         :param robot_name: example-robot-data 中的机器人名称
         :param tcp_frame_name: 末端执行器 Frame 名称。若为 None，默认取最后一个 Frame
         """
@@ -140,10 +140,10 @@ if __name__ == "__main__":
         config = json.load(f)
         
     # 使用配置参数初始化离散化器
-    discretizer = WorkspaceDiscretizer.from_config(config)
+    discretizer = WsDiscretizer.from_config(config)
     
     # 初始化构建器 (使用默认的 UR5)
-    builder = CapabilityMapBuilder(discretizer, robot_name='ur5')
+    builder = CmapBuilderIK(discretizer, robot_name='ur5')
     
     # 运行算法 (为了快速测试，这里设置 100 次。论文标准为 1,000,000 次)
     builder.build(num_samples=100)

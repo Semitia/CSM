@@ -2,7 +2,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 import math
 
-class WorkspaceDiscretizer:
+class WsDiscretizer:
     """
     负责机器人工作空间位置(R^3)和姿态(SO(3))的离散化。
     """
@@ -147,7 +147,7 @@ if __name__ == "__main__":
     }
     
     # 使用配置参数初始化离散化器
-    discretizer = WorkspaceDiscretizer(
+    discretizer = WsDiscretizer(
         arm_length=TEST_CONFIG["arm_length"], 
         l_c=TEST_CONFIG["voxel_size"], 
         n_p=TEST_CONFIG["sphere_points"], 

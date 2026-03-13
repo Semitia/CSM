@@ -6,9 +6,9 @@ import example_robot_data as erd
 import meshcat.geometry as mg
 import time
 import polyscope as ps
-from WorkspaceDiscretizer import WorkspaceDiscretizer
+from ws_discretizer import WsDiscretizer
 
-class CapabilityMapAnalyzer:
+class CmapAnalyzer:
     def __init__(self, filepath, discretizer=None):
         print(f"正在从 {filepath} 加载能力图数据...")
         data = np.load(filepath, allow_pickle=True)
@@ -24,8 +24,8 @@ class CapabilityMapAnalyzer:
             self.discretizer = discretizer
         elif 'config' in data:
             config = data['config'].item()
-            print("发现内嵌配置，正在自动创建 WorkspaceDiscretizer...")
-            self.discretizer = WorkspaceDiscretizer.from_config(config)
+            print("发现内嵌配置，正在自动创建 WsDiscretizer...")
+            self.discretizer = WsDiscretizer.from_config(config)
         else:
             raise ValueError("未提供 discretizer 实例，且数据文件中未包含配置信息！")
 
@@ -188,7 +188,7 @@ class CapabilityMapAnalyzer:
 
 if __name__ == "__main__":
     file_path = "./data/ur5_fk_cmap_multi.npz"
-    analyzer = CapabilityMapAnalyzer(filepath=file_path)
+    analyzer = CmapAnalyzer(filepath=file_path)
     
     # 可视化
     # analyzer.visualize_meshcat(robot_name='ur5', metric='D', 

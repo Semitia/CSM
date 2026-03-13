@@ -6,9 +6,9 @@ import time
 import os
 import json
 from tqdm import tqdm
-from WorkspaceDiscretizer import WorkspaceDiscretizer #
+from ws_discretizer import WsDiscretizer
 
-class CapabilityMapBuilderFK:
+class CmapBuilderFK:
     def __init__(self, discretizer, robot_name='ur5', tcp_frame_name=None):
         self.discretizer = discretizer
         self.robot_name = robot_name
@@ -189,9 +189,9 @@ if __name__ == '__main__':
     config_path = os.path.join(os.path.dirname(__file__), "discretizer_config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
-    discretizer = WorkspaceDiscretizer.from_config(config) #
+    discretizer = WsDiscretizer.from_config(config) #
     
-    builder = CapabilityMapBuilderFK(discretizer, robot_name='ur5')
+    builder = CmapBuilderFK(discretizer, robot_name='ur5')
     
     # max_fk 探测的最大正解次数。
     builder.build(max_fk=100_000_000, save_path="./data/ur5_fk_cmap.npz")

@@ -9,7 +9,7 @@ import multiprocessing as mp
 import ctypes
 import signal  # 新增：用于处理信号
 from tqdm import tqdm
-from WorkspaceDiscretizer import WorkspaceDiscretizer
+from ws_discretizer import WsDiscretizer
 
 def get_halton_sequence(index, bases):
     """独立的 Halton 序列生成器"""
@@ -35,7 +35,7 @@ def worker_task_fk(worker_id, start_step, max_fk, num_processes, config_dict,
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     
     # 1. 恢复离散化器
-    discretizer = WorkspaceDiscretizer.from_config(config_dict)
+    discretizer = WsDiscretizer.from_config(config_dict)
     cmap_shared = np.ctypeslib.as_array(shared_array_base).reshape(cmap_shape)
     
     # 2. 重新加载机器人与碰撞模型
@@ -101,7 +101,7 @@ if __name__ == '__main__':
     config_path = os.path.join(os.path.dirname(__file__), "discretizer_config.json")
     with open(config_path, "r") as f:
         config_dict = json.load(f)
-    discretizer = WorkspaceDiscretizer.from_config(config_dict)
+    discretizer = WsDiscretizer.from_config(config_dict)
     
     cmap_shape = (discretizer.n_c, discretizer.n_c, discretizer.n_c, discretizer.n_p, discretizer.m_o)
     total_blocks = int(np.prod(cmap_shape))
