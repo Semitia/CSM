@@ -24,6 +24,9 @@ class WorkspaceDiscretizer:
         # 2. 预计算离散化姿态集 O_s [cite: 281]
         self.sphere_points = self._generate_spiral_points()
         self.discrete_frames = self._generate_discrete_frames()
+        
+        # 3. 计算总离散化体素数 N_s 
+        self.total_discrete_frames = self.n_c**3 * self.n_p * self.m_o
 
     def to_config(self):
         """

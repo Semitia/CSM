@@ -1,7 +1,5 @@
 import numpy as np
-import open3d as o3d
 import matplotlib.pyplot as plt
-import copy
 import pinocchio as pin
 from pinocchio.visualize import MeshcatVisualizer
 import example_robot_data as erd
@@ -133,10 +131,10 @@ class CapabilityMapAnalyzer:
                 print("退出。")
 
 if __name__ == "__main__":
-    file_path = "./data/ur5_capability_map.npz"
+    file_path = "./data/ur5_fk_cmap.npz"
     analyzer = CapabilityMapAnalyzer(filepath=file_path)
     
-    # 这里的 slice_axis='y' 会让你看到 XZ 平面的垂直剖面
+    # 可视化
     analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
                               threshold=1.0, slice_axis='y', 
                               cut_half=False, alpha=0.3)
