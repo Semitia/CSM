@@ -5,8 +5,14 @@ from pinocchio.visualize import MeshcatVisualizer
 import example_robot_data as erd
 import meshcat.geometry as mg
 import time
+import os
 import polyscope as ps
 from ws_discretizer import WsDiscretizer
+# 强制 Open3D 忽略 Wayland，使用 Xwayland (X11) 模式
+os.environ["WAYLAND_DISPLAY"] = ""
+import open3d as o3d
+import matplotlib.pyplot as plt
+
 
 class CmapAnalyzer:
     def __init__(self, filepath, discretizer=None):
@@ -153,47 +159,84 @@ class CmapAnalyzer:
         values = data_matrix[indices[:, 0], indices[:, 1], indices[:, 2]]
         
         # 批量转换索引到世界坐标 (假设 discretizer.get_voxel_center 支持批量更佳)
-        # 这里用列表推导式，虽然慢一点点但比 Meshcat 渲染快万倍
         centers = np.array([self.discretizer.get_voxel_center(tuple(idx)) for idx in indices])
 
         # 3. 注册点云
         # 在 Polyscope 中，点云默认支持透明度和半径调整
         ps_cloud = ps.register_point_cloud("capability_map", centers)
-        ps_cloud.add_scalar_quantity("reachability", values, enabled=True, cmap='jet')
+        color_values = 100 - values
+        ps_cloud.add_scalar_quantity("reachability", color_values, enabled=True, cmap='jet')
         ps_cloud.set_radius(self.discretizer.l_c * 0.4) # 球半径，根据体素大小调整
-        
-        # 4. 加载机器人 (静态姿态展示)
-        try:
-            import example_robot_data as erd
-            robot = erd.load(robot_name)
-            q_ready = np.array([0, -1.57, 1.57, -1.57, -1.57, 0])
-            pin.forwardKinematics(robot.model, robot.data, q_ready)
-            pin.updateGeometryPlacements(robot.model, robot.data, robot.visual_model, robot.visual_data)
 
-            for i, geom_obj in enumerate(robot.visual_model.geometryObjects):
-                # 尝试获取网格数据 (针对 STL/OBJ 类型的模型)
-                if hasattr(geom_obj.geometry, 'vertices'):
-                    v = geom_obj.geometry.vertices
-                    f = geom_obj.geometry.triangles
-                    M = robot.visual_data.oMg[i]
-                    v_world = (M.rotation @ v.T).T + M.translation
-                    ps.register_surface_mesh(f"robot_{geom_obj.name}", v_world, f, color=(0.7, 0.7, 0.7))
-        except Exception as e:
-            print(f"机器人模型加载跳过: {e}")
+        ps.add_scene_slice_plane()
 
         print("--- Polyscope 已启动 ---")
-        print("提示：在右侧菜单选择 'View' -> 'Slicing Planes' 开启实时剖切")
+        print("提示：在菜单选择 'View' -> 'Slicing Planes' 开启实时剖切")
         ps.show()
 
+    def visualize_open3d(self, metric='D_o', threshold=1.0):
+        """
+        使用 Open3D 展示能力图：更稳定的工业级点云渲染
+        """
+        # 1. 提取数据
+        data_matrix = self.D_o if metric == 'D_o' else self.D
+        indices = np.argwhere(data_matrix >= threshold)
+        
+        if len(indices) == 0:
+            print("Error: No voxels found above threshold.")
+            return
+
+        # 2. 坐标转换 (矢量化)
+        # 使用你定义的转换逻辑
+        offset = (1.0 - self.discretizer.n_c / 2.0)
+        centers = (indices + offset) * self.discretizer.l_c - (self.discretizer.l_c / 2.0)
+        
+        # 3. 颜色映射 (Color Mapping)
+        # 将数值映射到 0-1 范围，并应用颜色表
+        values = data_matrix[indices[:, 0], indices[:, 1], indices[:, 2]]
+        normalized_values = (values - values.min()) / (values.max() - values.min() + 1e-6)
+        
+        # 使用 jet 或 viridis 颜色表
+        cmap = plt.get_cmap('jet_r')
+        colors = cmap(normalized_values)[:, :3] # 只要 RGB
+
+        # 4. 创建 Open3D 点云对象
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(centers)
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+
+        # 5. 可视化配置
+        print(f"--- Open3D 启动中: 渲染 {len(centers)} 个点 ---")
+        print("操作提示：[H] 帮助, [+/-] 调整点的大小, [Shift + +/-] 调整法线长度")
+        
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(window_name="Capability Map - Open3D", width=1280, height=720)
+        
+        # 添加几何体
+        vis.add_geometry(pcd)
+        
+        # 获取渲染设置并调整点的大小
+        # 如果你觉得间隙大，就调大这里的 point_size
+        opt = vis.get_render_option()
+        opt.point_size = 5.0  # 这里的单位是像素，可以手动调大直到间隙消失
+        opt.background_color = np.asarray([0.1, 0.1, 0.1]) # 深灰色背景
+        
+        # 添加一个坐标轴辅助观察
+        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=self.discretizer.l_ws/4, origin=[0, 0, 0])
+        vis.add_geometry(axes)
+        
+        vis.run()
+        vis.destroy_window()
 
 if __name__ == "__main__":
-    file_path = "./data/ur5_fk_cmap_multi.npz"
+    file_path = "./data/csm_fk_cmap_multi.npz"
     analyzer = CmapAnalyzer(filepath=file_path)
     
     # 可视化
     # analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
     #                           threshold=0.1, slice_axis='y', 
     #                           cut_half=False, alpha=0.3) 
-    analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
-                              threshold=0.1, slice_axis='y', 
-                              cut_half=False, alpha=0.3) 
+    # analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
+    #                           threshold=0.1, slice_axis='y', 
+    #                           cut_half=False, alpha=0.3) 
+    analyzer.visualize_open3d(metric='D', threshold=0.1)                           

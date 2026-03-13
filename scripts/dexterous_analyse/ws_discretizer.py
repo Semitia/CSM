@@ -70,7 +70,6 @@ class WsDiscretizer:
         映射函数 w(g)：将体素网格坐标 g 映射回其在笛卡尔空间中的中心坐标 t [cite: 227]。
         """
         g = np.asarray(g)
-        # 根据公式 14 计算体素中心 [cite: 228]
         t = (g + (1.0 - self.n_c / 2.0)) * self.l_c - (self.l_c / 2.0)
         return t
 

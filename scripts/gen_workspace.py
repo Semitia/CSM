@@ -89,7 +89,7 @@ if __name__ == "__main__":
     # 生成并保存工作空间数据
     all_workspace_data = []
     # num_samples_per_mode = [125000, 125000, 125000, 125000]  # 为每个模式指定样本数量
-    num_samples_per_mode = [200000, 200000, 200000, 0]  # 为每个模式指定样本数量
+    num_samples_per_mode = [200000, 200000, 200000, 0]  # 为每个模式指定样本数量，3.4mm 模型只需要 3 个模式
     for mode in range(1, 5):  # 生成模式1到模式4的数据
         workspace_data = generate_workspace_data(csm, mode, num_samples=num_samples_per_mode[mode-1])
         all_workspace_data.extend(workspace_data)

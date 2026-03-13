@@ -185,8 +185,8 @@ if __name__ == '__main__':
     # 使用你提供的配置结构加载离散化器
     import json
     import os
-    
-    config_path = os.path.join(os.path.dirname(__file__), "discretizer_config.json")
+   # 读取配置文件
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config/discr_cfg_ur5.json"))
     with open(config_path, "r") as f:
         config = json.load(f)
     discretizer = WsDiscretizer.from_config(config) #

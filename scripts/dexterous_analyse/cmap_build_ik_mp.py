@@ -135,7 +135,7 @@ if __name__ == '__main__':
     
     # 1. 初始化你的离散化器
     # 读取配置文件
-    config_path = os.path.join(os.path.dirname(__file__), "discretizer_config.json")
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config/discr_cfg_ur5.json"))
     with open(config_path, "r") as f:
         config = json.load(f)
         
