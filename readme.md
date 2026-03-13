@@ -117,9 +117,9 @@ conda install -c conda-forge meshcat-python
 - [x] 3.4mm手术工具实际参数
 - [x] 跑3.4mm，确认ls为0时是否有问题
 - [x] 添加末端工具
-- [ ] 普通串联机械臂 dexterous workspace 复现
-- [ ] 基于采样的 普通串联机械臂 dexterous workspace
-- [ ] CSM 对接 pinocchio 求解框架
+- [x] 普通串联机械臂 dexterous workspace 复现
+- [x] 基于FK的 普通串联机械臂 dexterous workspace
+- [ ] CSM 对接 pinocchio 求解框架 ，加速不了多少，没啥意义
 - [ ] CSM dexterous workspace 实验
 - [ ] CSM 兼容 pinocchio CAD 构建与可视化
 

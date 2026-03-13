@@ -5,6 +5,7 @@ from pinocchio.visualize import MeshcatVisualizer
 import example_robot_data as erd
 import meshcat.geometry as mg
 import time
+import polyscope as ps
 from WorkspaceDiscretizer import WorkspaceDiscretizer
 
 class CapabilityMapAnalyzer:
@@ -130,11 +131,69 @@ class CapabilityMapAnalyzer:
             except KeyboardInterrupt:
                 print("退出。")
 
+    def visualize_polyscope(self, robot_name='ur5', metric='D_o', threshold=1.0, **kwargs):
+        """
+        高性能渲染：使用 Polyscope 展示能力图
+        kwargs 仅为了兼容原有 Meshcat 调用参数，Polyscope 建议在 GUI 中手动剖切
+        """
+        # 1. 初始化
+        if not ps.is_initialized():
+            ps.init()
+        ps.set_up_dir("z_up")
+        ps.set_ground_plane_mode("none") # 隐藏地面，方便全方位观察
+
+        # 2. 提取并过滤数据 (矢量化处理)
+        data_matrix = self.D_o if metric == 'D_o' else self.D
+        indices = np.argwhere(data_matrix >= threshold)
+        
+        if len(indices) == 0:
+            print("警告：没有超过阈值的体素，请降低 threshold。")
+            return
+
+        values = data_matrix[indices[:, 0], indices[:, 1], indices[:, 2]]
+        
+        # 批量转换索引到世界坐标 (假设 discretizer.get_voxel_center 支持批量更佳)
+        # 这里用列表推导式，虽然慢一点点但比 Meshcat 渲染快万倍
+        centers = np.array([self.discretizer.get_voxel_center(tuple(idx)) for idx in indices])
+
+        # 3. 注册点云
+        # 在 Polyscope 中，点云默认支持透明度和半径调整
+        ps_cloud = ps.register_point_cloud("capability_map", centers)
+        ps_cloud.add_scalar_quantity("reachability", values, enabled=True, cmap='jet')
+        ps_cloud.set_radius(self.discretizer.l_c * 0.4) # 球半径，根据体素大小调整
+        
+        # 4. 加载机器人 (静态姿态展示)
+        try:
+            import example_robot_data as erd
+            robot = erd.load(robot_name)
+            q_ready = np.array([0, -1.57, 1.57, -1.57, -1.57, 0])
+            pin.forwardKinematics(robot.model, robot.data, q_ready)
+            pin.updateGeometryPlacements(robot.model, robot.data, robot.visual_model, robot.visual_data)
+
+            for i, geom_obj in enumerate(robot.visual_model.geometryObjects):
+                # 尝试获取网格数据 (针对 STL/OBJ 类型的模型)
+                if hasattr(geom_obj.geometry, 'vertices'):
+                    v = geom_obj.geometry.vertices
+                    f = geom_obj.geometry.triangles
+                    M = robot.visual_data.oMg[i]
+                    v_world = (M.rotation @ v.T).T + M.translation
+                    ps.register_surface_mesh(f"robot_{geom_obj.name}", v_world, f, color=(0.7, 0.7, 0.7))
+        except Exception as e:
+            print(f"机器人模型加载跳过: {e}")
+
+        print("--- Polyscope 已启动 ---")
+        print("提示：在右侧菜单选择 'View' -> 'Slicing Planes' 开启实时剖切")
+        ps.show()
+
+
 if __name__ == "__main__":
-    file_path = "./data/ur5_fk_cmap.npz"
+    file_path = "./data/ur5_fk_cmap_multi.npz"
     analyzer = CapabilityMapAnalyzer(filepath=file_path)
     
     # 可视化
-    analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
-                              threshold=1.0, slice_axis='y', 
-                              cut_half=False, alpha=0.3)
+    # analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
+    #                           threshold=0.1, slice_axis='y', 
+    #                           cut_half=False, alpha=0.3) 
+    analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
+                              threshold=0.1, slice_axis='y', 
+                              cut_half=False, alpha=0.3) 

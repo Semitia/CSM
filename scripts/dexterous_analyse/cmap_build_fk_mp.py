@@ -97,6 +97,7 @@ if __name__ == '__main__':
     save_path = "./data/ur5_fk_cmap_multi.npz"
     max_fk = 100_000_000
     
+    # 加载离散化器配置
     config_path = os.path.join(os.path.dirname(__file__), "discretizer_config.json")
     with open(config_path, "r") as f:
         config_dict = json.load(f)
