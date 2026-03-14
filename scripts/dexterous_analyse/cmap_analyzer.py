@@ -11,7 +11,7 @@ from ws_discretizer import WsDiscretizer
 # 强制 Open3D 忽略 Wayland，使用 Xwayland (X11) 模式
 os.environ["WAYLAND_DISPLAY"] = ""
 import open3d as o3d
-import matplotlib.pyplot as plt
+import matplotlib as mpl
 
 
 class CmapAnalyzer:
@@ -162,11 +162,42 @@ class CmapAnalyzer:
         # 3. 注册点云
         # 在 Polyscope 中，点云默认支持透明度和半径调整
         ps_cloud = ps.register_point_cloud("capability_map", centers)
-        color_values = 100 - values
-        ps_cloud.add_scalar_quantity("reachability", color_values, enabled=True, cmap='jet')
-        # 强制 Polyscope 将传入的值作为真实的绝对世界坐标尺寸（米）
-        ps_cloud.set_radius(self.discretizer.l_c * 0.4, relative=False)
 
+        # color_values = 100 - values
+        # # 增加 vminmax=(0, 100) 强制固定颜色映射范围
+        # ps_cloud.add_scalar_quantity(
+        #     "reachability", 
+        #     color_values, 
+        #     enabled=True, 
+        #     cmap='jet',
+        #     vminmax=(0, 100),  # 固定 0~100 的映射范围
+        #     onscreen_colorbar_enabled=True    # <-- 开启屏幕独立图例
+        # )
+
+        # ====== 修复开始 ======
+        # 1. 修复 Warning: 使用 Matplotlib 最新 API 获取反转色谱的 RGB 数组
+        reversed_jet_colors = mpl.colormaps['jet_r'](np.linspace(0, 1, 256))[:, :3]
+        
+        # 2. 修复 Error: 将数组保存为 1x256 像素的临时图片，供 Polyscope 读取
+        cmap_img_path = "temp_jet_r.png"
+        plt.imsave(cmap_img_path, reversed_jet_colors.reshape(1, 256, 3))
+        
+        # 让 Polyscope 从该图片加载自定义色谱
+        ps.load_color_map("my_jet_reversed", cmap_img_path)
+        # ====== 修复结束 ======
+
+        # 4. 添加标量场，直接传入原始 values，图例数值彻底正确！
+        ps_cloud.add_scalar_quantity(
+            "reachability", 
+            values,                           
+            enabled=True, 
+            cmap='my_jet_reversed',           # <--- 使用刚才加载的反转色谱
+            vminmax=(0, 100),                 # <--- 绝对数值范围
+            onscreen_colorbar_enabled=True    # <--- 显示屏幕图例
+        )
+
+        # 强制 Polyscope 将传入的值作为真实的绝对世界坐标尺寸（米）
+        ps_cloud.set_radius(self.discretizer.l_c * 0.5, relative=False)
         ps.add_scene_slice_plane()
 
         print("--- Polyscope 已启动 ---")
@@ -299,8 +330,8 @@ class CmapAnalyzer:
 
 
 if __name__ == "__main__":
-    file_path = "./data/csm_fk_cmap_multi.npz"
-    # file_path = "./data/ur5_fk_cmap_multi.npz"
+    # file_path = "./data/csm_fk_cmap_multi.npz"
+    file_path = "./data/ur5_fk_cmap_multi.npz"
     analyzer = CmapAnalyzer(filepath=file_path)
     
     # 可视化
@@ -308,7 +339,7 @@ if __name__ == "__main__":
     #                           threshold=0.1, slice_axis='y', 
     #                           cut_half=False, alpha=0.3) 
 
-    analyzer.visualize_polyscope(robot_name='ur5', metric='D_o', 
+    analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
                               threshold=0.1, slice_axis='y', 
                               cut_half=False, alpha=0.3) 
 

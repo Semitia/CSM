@@ -122,7 +122,7 @@ def worker_task_fk(worker_id, start_step, max_fk, num_processes, valid_modes,
 if __name__ == '__main__':
     # ========================== Parameters ==========================
     save_path = "./data/csm_fk_cmap_multi.npz"
-    max_fk = 10_000_000  # Adjust as needed
+    max_fk = 50_000_000  # Adjust as needed
     USE_RICH = True
 
     # Load Discretizer Config

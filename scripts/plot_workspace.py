@@ -11,7 +11,7 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection
 # ===== 配置 =====
 json_path = "./data/workspace_data_3.4mm.json"
 RENDER_MODE = "wire"   # ← 'wire' | 'surface' | 'both'
-SEPARATE_PLOTS = True  # ← 是否分成四个子图绘制
+SEPARATE_PLOTS = False  # ← 是否分成四个子图绘制
 
 MODE_COLORS = {1: "#E41A1C", 2: "#F2DF9588", 3: "#9ACDE5B1", 4: "#C7C7C7B9"}
 MODE_LABELS = {1: "C1", 2: "C2", 3: "C3", 4: "C4"}
@@ -80,10 +80,6 @@ def main():
         axes = [fig.add_subplot(2, 2, i+1, projection="3d") for i in range(4)]
         # ===== 统一范围计算 =====
         all_pts = np.vstack([pts for pts in by_mode.values() if pts.size])
-        if all_pts.size:
-            pad = 0.05 * (all_pts.max() - all_pts.min())
-            mins = all_pts.min(axis=0) - pad
-            maxs = all_pts.max(axis=0) + pad
         for m, ax in zip((1, 2, 3, 4), axes):
             pts = by_mode[m]
             if pts.size == 0:
@@ -96,9 +92,13 @@ def main():
             # ax.view_init(elev=0, azim=90)
             # === 每个子图都用相同的坐标范围 ===
             if all_pts.size:
-                ax.set_xlim(mins[0], maxs[0])
-                ax.set_ylim(mins[1], maxs[1])
-                ax.set_zlim(mins[2], maxs[2])
+                # 计算数据范围并设置相等的轴范围以保持 1:1:1 比例
+                data_range = all_pts.max() - all_pts.min()
+                center = (all_pts.max(axis=0) + all_pts.min(axis=0)) / 2
+                max_range = data_range.max() * 1.1 / 2  # 10% 留白
+                ax.set_xlim(center[0] - max_range, center[0] + max_range)
+                ax.set_ylim(center[1] - max_range, center[1] + max_range)
+                ax.set_zlim(center[2] - max_range, center[2] + max_range)
             # 背景透明优化
             # for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
             #     axis.pane.set_facecolor((1, 1, 1, 0))
@@ -118,12 +118,13 @@ def main():
             draw_shell(ax, pts, MODE_COLORS[m], label=MODE_LABELS[m], mode=RENDER_MODE)
 
         if all_pts.size:
-            pad = 0.05 * (all_pts.max() - all_pts.min())
-            mins = all_pts.min(axis=0) - pad
-            maxs = all_pts.max(axis=0) + pad
-            ax.set_xlim(mins[0], maxs[0])
-            ax.set_ylim(mins[1], maxs[1])
-            ax.set_zlim(mins[2], maxs[2])
+            # 计算数据范围并设置相等的轴范围以保持 1:1:1 比例
+            data_range = all_pts.max() - all_pts.min()
+            center = (all_pts.max(axis=0) + all_pts.min(axis=0)) / 2
+            max_range = data_range.max() * 1.1 / 2  # 10% 留白
+            ax.set_xlim(center[0] - max_range, center[0] + max_range)
+            ax.set_ylim(center[1] - max_range, center[1] + max_range)
+            ax.set_zlim(center[2] - max_range, center[2] + max_range)
 
         ax.legend(loc="upper right", frameon=False)
         # ax.set_proj_type('ortho')

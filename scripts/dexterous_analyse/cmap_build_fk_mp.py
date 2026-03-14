@@ -96,7 +96,7 @@ if __name__ == '__main__':
     # ========================== 参数配置 ==========================
     robot_name = 'ur5'
     save_path = "./data/ur5_fk_cmap_multi.npz"
-    max_fk = 100_000_000
+    max_fk = 200_000_000
     USE_RICH = False  # <--- 新增：控制进度条样式，默认为 False (使用单行 tqdm)
 
     # 加载离散化器配置

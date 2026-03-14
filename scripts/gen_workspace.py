@@ -82,7 +82,7 @@ def save_workspace_to_file(filename, data):
         
 if __name__ == "__main__":
     fig = plt.figure(figsize=(20, 20))
-    config_name = "csm_config_3.4mm.yaml"
+    config_name = "csm_cfg_3.4mm.yaml"
     config_path = Path("./config") / config_name
     csm = CSM.from_config(config_path)
     

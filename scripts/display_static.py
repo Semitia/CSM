@@ -41,7 +41,7 @@ def set_random_state(csm, mode):
 
 if __name__ == "__main__":
     # 使用正确的配置文件路径
-    config_path = Path("./config/csm_config_3.4mm.yaml")
+    config_path = Path("./config/csm_cfg_3.4mm.yaml")
     
     print(f"Loading config from: {config_path}")
 
