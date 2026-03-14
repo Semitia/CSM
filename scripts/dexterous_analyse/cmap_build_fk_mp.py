@@ -45,15 +45,28 @@ def worker_task_fk(worker_id, start_step, max_fk, num_processes, config_dict,
     data = robot.data
     collision_model = robot.collision_model
     
+    pedestal_height = 0.2
+    pedestal_radius = 0.15
     pedestal_geom = pin.GeometryObject(
         "pedestal", 0, 
-        pin.SE3(np.eye(3), np.array([0, 0, -0.4])),
-        hppfcl.Cylinder(0.15, 0.2)
+        # 中心下移一半的高度，使得圆柱体上表面刚好在 z = 0
+        pin.SE3(np.eye(3), np.array([0, 0, -pedestal_height / 2])),
+        hppfcl.Cylinder(pedestal_radius, pedestal_height)
     )
     pedestal_id = collision_model.addGeometryObject(pedestal_geom)
+    
+    # 精准添加碰撞对，避免“永远碰撞” ---
     for i in range(len(collision_model.geometryObjects)):
-        if i != pedestal_id:
+        if i == pedestal_id:
+            continue
+            
+        geom_obj = collision_model.geometryObjects[i]
+        # 如果几何体绑定在 universe (0) 或者 基座关节上（通常UR5是不会动的），则忽略
+        # 视具体 URDF 而定，有些机器人的基座 parent_joint 是 0 或 1
+        if geom_obj.parentJoint > 1: 
             collision_model.addCollisionPair(pin.CollisionPair(i, pedestal_id))
+            
+    # 一定要在所有几何体和碰撞对添加完毕后再 createData
     collision_data = collision_model.createData()
     
     tcp_id = model.getFrameId(tcp_frame_name) if tcp_frame_name else model.nframes - 1
@@ -97,7 +110,7 @@ if __name__ == '__main__':
     robot_name = 'ur5'
     save_path = "./data/ur5_fk_cmap_multi.npz"
     max_fk = 200_000_000
-    USE_RICH = False  # <--- 新增：控制进度条样式，默认为 False (使用单行 tqdm)
+    USE_RICH = True  # <--- 新增：控制进度条样式，默认为 False (使用单行 tqdm)
 
     # 加载离散化器配置
     config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config/discr_cfg_ur5.json"))

@@ -335,13 +335,13 @@ if __name__ == "__main__":
     analyzer = CmapAnalyzer(filepath=file_path)
     
     # 可视化
-    # analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
-    #                           threshold=0.1, slice_axis='y', 
-    #                           cut_half=False, alpha=0.3) 
-
-    analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
+    analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
                               threshold=0.1, slice_axis='y', 
                               cut_half=False, alpha=0.3) 
+
+    # analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
+    #                           threshold=0.1, slice_axis='y', 
+    #                           cut_half=False, alpha=0.3) 
 
     # analyzer.visualize_open3d(metric='D', threshold=0.1 )
 
