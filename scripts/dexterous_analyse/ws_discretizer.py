@@ -28,14 +28,14 @@ class WsDiscretizer:
         # 3. 计算总离散化体素数 N_s 
         self.total_discrete_frames = self.n_c**3 * self.n_p * self.m_o
 
-        # print 离散化器配置
-        print(f"WsDiscretizer 配置:")
-        print(f"  机械臂长度: {self.l_ws / 2.0}")
-        print(f"  cell 边长: {self.l_c}")
-        print(f"  单维度体素数量: {self.n_c}")
-        print(f"  姿态离散点数: {self.n_p}")
-        print(f"  姿态离散方向数: {self.m_o}")
-        print(f"  总离散化体素数: {self.total_discrete_frames}")
+        # # print 离散化器配置
+        # print(f"WsDiscretizer 配置:")
+        # print(f"  机械臂长度: {self.l_ws / 2.0}")
+        # print(f"  cell 边长: {self.l_c}")
+        # print(f"  单维度体素数量: {self.n_c}")
+        # print(f"  单体素朝向数: {self.n_p}")
+        # print(f"  单朝向自转分区数: {self.m_o}")
+        # print(f"  总离散化区块数: {self.total_discrete_frames}")
 
     def to_config(self):
         """
@@ -60,26 +60,59 @@ class WsDiscretizer:
             delta_o=config["delta_o"]
         )
 
+    # def get_voxel_index(self, t):
+    #     """
+    #     映射函数 v(t)：将笛卡尔坐标 t (x, y, z) 映射到体素网格坐标 g [cite: 225]。
+    #     """
+    #     t = np.asarray(t)
+    #     # 检查是否在包围盒外
+    #     if np.any(np.abs(t) > self.l_ws / 2.0):
+    #         return None 
+            
+    #     # 根据公式 13 计算网格坐标 [cite: 225]
+    #     # 注意：论文中使用向上取整 ceiling operator [cite: 211]
+    #     g = np.ceil(t / self.l_c) + (self.n_c / 2.0 - 1.0)
+    #     return g.astype(int)
+
+    # def get_voxel_center(self, g):
+    #     """
+    #     映射函数 w(g)：将体素网格坐标 g 映射回其在笛卡尔空间中的中心坐标 t [cite: 227]。
+    #     """
+    #     g = np.asarray(g)
+    #     t = (g + (1.0 - self.n_c / 2.0)) * self.l_c - (self.l_c / 2.0)
+    #     return t
+
     def get_voxel_index(self, t):
         """
-        映射函数 v(t)：将笛卡尔坐标 t (x, y, z) 映射到体素网格坐标 g [cite: 225]。
+        映射函数 v(t)：将笛卡尔坐标 t (x, y, z) 映射到体素网格坐标 g。
+        采用平移至原点加向下取整的稳健算法。
         """
         t = np.asarray(t)
-        # 检查是否在包围盒外
+        # 1. 检查是否在包围盒外
         if np.any(np.abs(t) > self.l_ws / 2.0):
             return None 
             
-        # 根据公式 13 计算网格坐标 [cite: 225]
-        # 注意：论文中使用向上取整 ceiling operator [cite: 211]
-        g = np.ceil(t / self.l_c) + (self.n_c / 2.0 - 1.0)
+        # 2. 将坐标系平移，使得包围盒的最小角点位于原点
+        t_min = -self.l_ws / 2.0
+        
+        # 3. 计算网格索引 (使用 np.floor 更稳健)
+        g = np.floor((t - t_min) / self.l_c)
+        
+        # 4. 边界安全处理：防止点恰好在最大边界 l_ws/2.0 时，算出的索引等于 n_c 而越界
+        g = np.clip(g, 0, self.n_c - 1)
+        
         return g.astype(int)
 
     def get_voxel_center(self, g):
         """
-        映射函数 w(g)：将体素网格坐标 g 映射回其在笛卡尔空间中的中心坐标 t [cite: 227]。
+        映射函数 w(g)：将体素网格坐标 g 映射回其在笛卡尔空间中的中心坐标 t。
         """
         g = np.asarray(g)
-        t = (g + (1.0 - self.n_c / 2.0)) * self.l_c - (self.l_c / 2.0)
+        t_min = -self.l_ws / 2.0
+        
+        # 网格中心点 = 起点 + (索引 + 0.5) * 体素大小
+        t = t_min + (g + 0.5) * self.l_c
+        
         return t
 
     def _generate_spiral_points(self):

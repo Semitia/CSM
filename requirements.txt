@@ -4,3 +4,6 @@ sympy
 tqdm
 pandas
 scipy
+polyscope
+rich
+open3d

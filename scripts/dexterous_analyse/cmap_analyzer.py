@@ -164,7 +164,8 @@ class CmapAnalyzer:
         ps_cloud = ps.register_point_cloud("capability_map", centers)
         color_values = 100 - values
         ps_cloud.add_scalar_quantity("reachability", color_values, enabled=True, cmap='jet')
-        ps_cloud.set_radius(self.discretizer.l_c * 0.4) # 球半径，根据体素大小调整
+        # 强制 Polyscope 将传入的值作为真实的绝对世界坐标尺寸（米）
+        ps_cloud.set_radius(self.discretizer.l_c * 0.4, relative=False)
 
         ps.add_scene_slice_plane()
 
@@ -230,15 +231,49 @@ class CmapAnalyzer:
             cmap = plt.get_cmap('jet_r')
             colors = cmap(normalized_values)[:, :3]
 
-            # --- 4. 转换并创建体素网格 ---
-            # 创建 Open3D 点云对象 (先创建点云作为数据载体)
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(centers)
-            pcd.colors = o3d.utility.Vector3dVector(colors)
-
-            # 核心修改：以物理尺寸 (米) 将点云转换为体素网格
+            # --- 4. 转换并创建带有间隙的体素网格 (Mesh) ---
             voxel_size = self.discretizer.l_c * 0.8
-            voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
+            
+            # 手动构建立方体的 8 个相对顶点
+            v_rel = np.array([
+                [-0.5, -0.5, -0.5], [ 0.5, -0.5, -0.5], 
+                [-0.5,  0.5, -0.5], [ 0.5,  0.5, -0.5],
+                [-0.5, -0.5,  0.5], [ 0.5, -0.5,  0.5], 
+                [-0.5,  0.5,  0.5], [ 0.5,  0.5,  0.5]
+            ]) * voxel_size
+
+            # 立方体的 12 个三角面
+            faces_rel = np.array([
+                [0, 2, 1], [1, 2, 3], # 底面
+                [4, 5, 6], [5, 7, 6], # 顶面
+                [0, 1, 4], [1, 5, 4], # 前面
+                [2, 6, 3], [3, 6, 7], # 后面
+                [0, 4, 2], [2, 4, 6], # 左面
+                [1, 3, 5], [3, 7, 5]  # 右面
+            ])
+
+            n_voxels = len(centers)
+            # 预分配内存以实现极速计算
+            vertices = np.zeros((n_voxels * 8, 3))
+            triangles = np.zeros((n_voxels * 12, 3), dtype=np.int32)
+            vertex_colors = np.zeros((n_voxels * 8, 3))
+
+            # 向量化生成所有顶点和面
+            for i in range(n_voxels):
+                vertices[i*8:(i+1)*8] = v_rel + centers[i]
+                triangles[i*12:(i+1)*12] = faces_rel + i * 8
+                # 为该立方体的 8 个顶点赋予相同的颜色
+                vertex_colors[i*8:(i+1)*8] = colors[i]
+
+            # 创建 Open3D TriangleMesh 几何体
+            custom_voxel_mesh = o3d.geometry.TriangleMesh()
+            custom_voxel_mesh.vertices = o3d.utility.Vector3dVector(vertices)
+            custom_voxel_mesh.triangles = o3d.utility.Vector3iVector(triangles)
+            custom_voxel_mesh.vertex_colors = o3d.utility.Vector3dVector(vertex_colors)
+            custom_voxel_mesh.compute_vertex_normals() # 计算法线以确保光照正确
+            
+            # (注意：在后面的代码中，将 vis.add_geometry(voxel_grid) 
+            #  改为 vis.add_geometry(custom_voxel_mesh) )
 
             # --- 5. 可视化配置保持不变 ---
             # ... (保持原有的代码不变)
@@ -248,7 +283,7 @@ class CmapAnalyzer:
             vis.create_window(window_name="Capability Map - VoxelGrid Section", width=1280, height=720)
             
             # 添加几何体时，添加体素网格而不是点云
-            vis.add_geometry(voxel_grid)
+            vis.add_geometry(custom_voxel_mesh)
             
             # 获取渲染设置 (体素渲染不需要调 point_size 了)
             opt = vis.get_render_option()
@@ -264,16 +299,18 @@ class CmapAnalyzer:
 
 
 if __name__ == "__main__":
-    # file_path = "./data/csm_fk_cmap_multi.npz"
-    file_path = "./data/ur5_fk_cmap_multi.npz"
+    file_path = "./data/csm_fk_cmap_multi.npz"
+    # file_path = "./data/ur5_fk_cmap_multi.npz"
     analyzer = CmapAnalyzer(filepath=file_path)
     
     # 可视化
     # analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
     #                           threshold=0.1, slice_axis='y', 
     #                           cut_half=False, alpha=0.3) 
-    analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
+
+    analyzer.visualize_polyscope(robot_name='ur5', metric='D_o', 
                               threshold=0.1, slice_axis='y', 
                               cut_half=False, alpha=0.3) 
-    # analyzer.visualize_open3d(metric='D', 
-    #                          threshold=0.1 )                       
+
+    # analyzer.visualize_open3d(metric='D', threshold=0.1 )
+

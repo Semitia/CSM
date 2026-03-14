@@ -120,8 +120,9 @@ conda install -c conda-forge meshcat-python
 - [x] 普通串联机械臂 dexterous workspace 复现
 - [x] 基于FK的 普通串联机械臂 dexterous workspace
 - [ ] CSM 对接 pinocchio 求解框架 ，加速不了多少，没啥意义
-- [ ] CSM dexterous workspace 实验
+- [x] CSM dexterous workspace 实验
 - [ ] CSM 兼容 pinocchio CAD 构建与可视化
+- [ ] dexterous 说明、报告
 
 ## 文件说明
 ### cmap_build_fk_mp.py

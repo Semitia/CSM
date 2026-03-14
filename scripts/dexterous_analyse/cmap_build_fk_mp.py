@@ -9,6 +9,7 @@ import multiprocessing as mp
 import ctypes
 import signal  # 新增：用于处理信号
 from tqdm import tqdm
+from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 from ws_discretizer import WsDiscretizer
 
 def get_halton_sequence(index, bases):
@@ -96,7 +97,8 @@ if __name__ == '__main__':
     robot_name = 'ur5'
     save_path = "./data/ur5_fk_cmap_multi.npz"
     max_fk = 100_000_000
-    
+    USE_RICH = False  # <--- 新增：控制进度条样式，默认为 False (使用单行 tqdm)
+
     # 加载离散化器配置
     config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config/discr_cfg_ur5.json"))
     with open(config_path, "r") as f:
@@ -153,34 +155,73 @@ if __name__ == '__main__':
         p.start()
         
     # ========================== 主进程监听与统计 ==========================
-    pbar = tqdm(total=max_fk, initial=start_step, desc="Multiprocess FK")
-    
     try:
         last_total_steps = 0
         last_filled = total_filled
         
-        while any(p.is_alive() for p in processes):
-            time.sleep(1.0)
-            
-            # 由于换成了 RawArray，读取不会发生任何锁竞争
-            current_total_steps = sum(shared_steps_counter)
-            step_delta = current_total_steps - last_total_steps
-            
-            current_filled = np.sum(cmap_view)
-            filled_delta = current_filled - last_filled
-            
-            pbar.update(step_delta)
-            
-            filled_percent = (current_filled / total_blocks) * 100.0
-            cost = (step_delta / filled_delta) if filled_delta > 0 else float('inf')
-            
-            pbar.set_postfix({
-                "Filled": f"{filled_percent:.4f}%", 
-                "Recent Cost": f"{cost:.2f} FK/区块"
-            })
-            
-            last_total_steps = current_total_steps
-            last_filled = current_filled
+        if USE_RICH:
+            # ---------------- 模式 A: Rich 多行炫酷模式 ----------------
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                
+                main_task = progress.add_task("[bold green]总进度", total=max_fk, completed=start_step)
+                
+                worker_tasks = []
+                for i in range(num_processes):
+                    worker_total = len(range(start_step + i, max_fk + 1, num_processes))
+                    worker_tasks.append(progress.add_task(f"[cyan]Worker {i:02d}", total=worker_total))
+
+                while any(p.is_alive() for p in processes):
+                    time.sleep(1.0)
+                    
+                    current_total_steps = sum(shared_steps_counter)
+                    step_delta = current_total_steps - last_total_steps
+                    current_filled = np.sum(cmap_view)
+                    filled_delta = current_filled - last_filled
+                    
+                    filled_percent = (current_filled / total_blocks) * 100.0
+                    cost = (step_delta / filled_delta) if filled_delta > 0 else float('inf')
+                    
+                    progress.update(
+                        main_task, 
+                        completed=start_step + current_total_steps,
+                        description=f"[bold green]总进度[/] [yellow](Filled: {filled_percent:.4f}% | Cost: {cost:.2f} FK/区块)[/]"
+                    )
+                    
+                    for i in range(num_processes):
+                        progress.update(worker_tasks[i], completed=shared_steps_counter[i])
+                    
+                    last_total_steps = current_total_steps
+                    last_filled = current_filled
+
+        else:
+            # ---------------- 模式 B: Tqdm 经典单行模式 ----------------
+            pbar = tqdm(total=max_fk, initial=start_step, desc="Multiprocess FK")
+            while any(p.is_alive() for p in processes):
+                time.sleep(1.0)
+                
+                current_total_steps = sum(shared_steps_counter)
+                step_delta = current_total_steps - last_total_steps
+                
+                current_filled = np.sum(cmap_view)
+                filled_delta = current_filled - last_filled
+                
+                pbar.update(step_delta)
+                
+                filled_percent = (current_filled / total_blocks) * 100.0
+                cost = (step_delta / filled_delta) if filled_delta > 0 else float('inf')
+                
+                pbar.set_postfix({
+                    "Filled": f"{filled_percent:.4f}%", 
+                    "Recent Cost": f"{cost:.2f} FK/区块"
+                })
+                
+                last_total_steps = current_total_steps
+                last_filled = current_filled
 
     except KeyboardInterrupt:
         print("\n\n收到中断指令，正在通知所有工作进程优雅退出 (请等待 1-2 秒)...")
@@ -189,7 +230,10 @@ if __name__ == '__main__':
             p.join() # 现在子进程会立刻检测到事件并平滑退出
             
     finally:
-        pbar.close()
+        # 如果使用的是 tqdm，需要手动关闭
+        if not USE_RICH and 'pbar' in locals():
+            pbar.close()
+            
         # 寻找“短板”，基于无锁数组读取，告别死锁
         min_steps_done = min(shared_steps_counter)
         safe_step_to_save = start_step + min_steps_done * num_processes

@@ -9,6 +9,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 # Adjust imports based on your exact directory structure
+from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 from ws_discretizer import WsDiscretizer
 from csm.model import CSM
 
@@ -122,7 +123,8 @@ if __name__ == '__main__':
     # ========================== Parameters ==========================
     save_path = "./data/csm_fk_cmap_multi.npz"
     max_fk = 10_000_000  # Adjust as needed
-    
+    USE_RICH = True
+
     # Load Discretizer Config
     discr_config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config/discr_cfg_csm.json"))
     with open(discr_config_path, "r") as f:
@@ -186,33 +188,74 @@ if __name__ == '__main__':
         p.start()
         
     # ========================== Main Thread Monitoring ==========================
-    pbar = tqdm(total=max_fk, initial=start_step, desc="Multiprocess CSM FK")
-    
     try:
         last_total_steps = 0
         last_filled = total_filled
         
-        while any(p.is_alive() for p in processes):
-            time.sleep(1.0)
+        if USE_RICH:
+            # ---------------- 模式 A: Rich 多行炫酷模式 ----------------
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                
+                main_task = progress.add_task("[bold green]Total Progress", total=max_fk, completed=start_step)
+                
+                worker_tasks = []
+                for i in range(num_processes):
+                    worker_total = len(range(start_step + i, max_fk + 1, num_processes))
+                    worker_tasks.append(progress.add_task(f"[cyan]Worker {i:02d}", total=worker_total))
+
+                while any(p.is_alive() for p in processes):
+                    time.sleep(1.0)
+                    
+                    current_total_steps = sum(shared_steps_counter)
+                    step_delta = current_total_steps - last_total_steps
+                    current_filled = np.sum(cmap_view)
+                    filled_delta = current_filled - last_filled
+                    
+                    filled_percent = (current_filled / total_blocks) * 100.0
+                    cost = (step_delta / filled_delta) if filled_delta > 0 else float('inf')
+                    
+                    progress.update(
+                        main_task, 
+                        completed=start_step + current_total_steps,
+                        description=f"[bold green]Total Progress[/] [yellow](Filled: {filled_percent:.4f}% | Cost: {cost:.2f} FK/Voxel)[/]"
+                    )
+                    
+                    for i in range(num_processes):
+                        progress.update(worker_tasks[i], completed=shared_steps_counter[i])
+                    
+                    last_total_steps = current_total_steps
+                    last_filled = current_filled
+
+        else:
+            # ---------------- 模式 B: Tqdm 经典单行模式 ----------------
+            pbar = tqdm(total=max_fk, initial=start_step, desc="Multiprocess CSM FK")
             
-            current_total_steps = sum(shared_steps_counter)
-            step_delta = current_total_steps - last_total_steps
-            
-            current_filled = np.sum(cmap_view)
-            filled_delta = current_filled - last_filled
-            
-            pbar.update(step_delta)
-            
-            filled_percent = (current_filled / total_blocks) * 100.0
-            cost = (step_delta / filled_delta) if filled_delta > 0 else float('inf')
-            
-            pbar.set_postfix({
-                "Filled": f"{filled_percent:.4f}%", 
-                "Cost": f"{cost:.2f} FK/Voxel"
-            })
-            
-            last_total_steps = current_total_steps
-            last_filled = current_filled
+            while any(p.is_alive() for p in processes):
+                time.sleep(1.0)
+                
+                current_total_steps = sum(shared_steps_counter)
+                step_delta = current_total_steps - last_total_steps
+                
+                current_filled = np.sum(cmap_view)
+                filled_delta = current_filled - last_filled
+                
+                pbar.update(step_delta)
+                
+                filled_percent = (current_filled / total_blocks) * 100.0
+                cost = (step_delta / filled_delta) if filled_delta > 0 else float('inf')
+                
+                pbar.set_postfix({
+                    "Filled": f"{filled_percent:.4f}%", 
+                    "Cost": f"{cost:.2f} FK/Voxel"
+                })
+                
+                last_total_steps = current_total_steps
+                last_filled = current_filled
 
     except KeyboardInterrupt:
         print("\n\nInterrupt received. Signaling workers to terminate gracefully (Please wait 1-2s)...")
@@ -221,7 +264,10 @@ if __name__ == '__main__':
             p.join()
             
     finally:
-        pbar.close()
+        # 如果使用的是 tqdm，需要手动关闭
+        if not USE_RICH and 'pbar' in locals():
+            pbar.close()
+            
         min_steps_done = min(shared_steps_counter)
         safe_step_to_save = start_step + min_steps_done * num_processes
         
