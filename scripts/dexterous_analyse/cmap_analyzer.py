@@ -91,8 +91,7 @@ class CmapAnalyzer:
             viewer["/Background"].set_property("visible", True)
 
             # 3. 设置机械臂姿态
-            # UR5 自然弯曲姿态
-            q_ready = np.array([0, -np.pi/2, np.pi/2, -np.pi/2, -np.pi/2, 0])
+            q_ready = robot.q0 
             robot.display(q_ready)
 
             # 4. 渲染体素球 (能力图)
@@ -332,16 +331,17 @@ class CmapAnalyzer:
 if __name__ == "__main__":
     # file_path = "./data/csm_fk_cmap_multi.npz"
     file_path = "./data/ur5_fk_cmap_multi.npz"
+    # file_path = "./data/panda_fk_cmap_multi.npz"
     analyzer = CmapAnalyzer(filepath=file_path)
     
     # 可视化
-    analyzer.visualize_meshcat(robot_name='ur5', metric='D', 
-                              threshold=0.1, slice_axis='y', 
-                              cut_half=False, alpha=0.3) 
-
-    # analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
+    # analyzer.visualize_meshcat(robot_name='panda', metric='D', 
     #                           threshold=0.1, slice_axis='y', 
     #                           cut_half=False, alpha=0.3) 
+
+    analyzer.visualize_polyscope(robot_name='ur5', metric='D', 
+                              threshold=0.1, slice_axis='y', 
+                              cut_half=False, alpha=0.3) 
 
     # analyzer.visualize_open3d(metric='D', threshold=0.1 )
 

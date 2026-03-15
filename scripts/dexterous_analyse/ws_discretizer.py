@@ -60,28 +60,6 @@ class WsDiscretizer:
             delta_o=config["delta_o"]
         )
 
-    # def get_voxel_index(self, t):
-    #     """
-    #     映射函数 v(t)：将笛卡尔坐标 t (x, y, z) 映射到体素网格坐标 g [cite: 225]。
-    #     """
-    #     t = np.asarray(t)
-    #     # 检查是否在包围盒外
-    #     if np.any(np.abs(t) > self.l_ws / 2.0):
-    #         return None 
-            
-    #     # 根据公式 13 计算网格坐标 [cite: 225]
-    #     # 注意：论文中使用向上取整 ceiling operator [cite: 211]
-    #     g = np.ceil(t / self.l_c) + (self.n_c / 2.0 - 1.0)
-    #     return g.astype(int)
-
-    # def get_voxel_center(self, g):
-    #     """
-    #     映射函数 w(g)：将体素网格坐标 g 映射回其在笛卡尔空间中的中心坐标 t [cite: 227]。
-    #     """
-    #     g = np.asarray(g)
-    #     t = (g + (1.0 - self.n_c / 2.0)) * self.l_c - (self.l_c / 2.0)
-    #     return t
-
     def get_voxel_index(self, t):
         """
         映射函数 v(t)：将笛卡尔坐标 t (x, y, z) 映射到体素网格坐标 g。
