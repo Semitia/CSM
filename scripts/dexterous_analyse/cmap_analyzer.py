@@ -329,8 +329,8 @@ class CmapAnalyzer:
 
 
 if __name__ == "__main__":
-    # file_path = "./data/csm_fk_cmap_multi.npz"
-    file_path = "./data/ur5_fk_cmap_multi.npz"
+    file_path = "./data/csm_fk_cmap_mp.npz"
+    # file_path = "./data/ur5_fk_cmap_mp.npz"
     # file_path = "./data/panda_fk_cmap_multi.npz"
     analyzer = CmapAnalyzer(filepath=file_path)
     
