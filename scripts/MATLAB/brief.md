@@ -1,0 +1,2 @@
+是2024b，参考一下官方最新文档
+你只需要看这个生成uniform的代码和论文效果图，帮我写matlab读取文件并可视化脚本，要和论文一样的效果。半透明的平滑的，而且能支持凹下去的形状，作为translation workspace，然后无法达到的地方就用另一个颜色填充，但也不是所有不可达的抵挡都画了出来。我猜测他可能是用了一个凸包包裹了translation workspace，凸包减去translation workspace就是这个不可达区域。
