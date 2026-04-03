@@ -8,6 +8,7 @@ from csm.model import CSM
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from pathlib import Path
+from scipy.io import savemat
 
 def _build_data_dict(csm, mode):
     return {
@@ -202,6 +203,65 @@ def save_workspace_to_file(filename, data):
 
     print(f"Saved workspace data file: {path.name}")
     print(f"Saved workspace data path: {path.resolve()}")
+
+
+def save_workspace_to_mat_file(filename, data, config_name, sampling_method, grid_res, num_samples_per_mode):
+    path = Path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    mode_points = {}
+    mode_rotations = {}
+    mode_configs = {}
+
+    for mode in (1, 2, 3, 4):
+        entries = [item for item in data if int(item["mode"]) == mode]
+        if entries:
+            mode_points[mode] = np.asarray([item["pose"][:3] for item in entries], dtype=float)
+            mode_rotations[mode] = np.asarray([item["rotation_matrix"] for item in entries], dtype=float)
+            mode_configs[mode] = np.asarray([
+                [
+                    item["config"]["phi"],
+                    item["config"]["theta_1"],
+                    item["config"]["theta_2"],
+                    item["config"]["delta_1"],
+                    item["config"]["delta_2"],
+                    item["config"]["L1"],
+                    item["config"]["L2"],
+                    item["config"]["Lr"],
+                    item["config"]["Ls"],
+                ]
+                for item in entries
+            ], dtype=float)
+        else:
+            mode_points[mode] = np.empty((0, 3), dtype=float)
+            mode_rotations[mode] = np.empty((0, 3, 3), dtype=float)
+            mode_configs[mode] = np.empty((0, 9), dtype=float)
+
+    all_points = np.vstack([mode_points[m] for m in (1, 2, 3, 4) if mode_points[m].size]) if any(
+        mode_points[m].size for m in (1, 2, 3, 4)
+    ) else np.empty((0, 3), dtype=float)
+
+    mat_payload = {
+        "config_name": np.asarray([config_name], dtype=object),
+        "sampling_method": np.asarray([sampling_method], dtype=object),
+        "uniform_grid_res": np.asarray([[grid_res]], dtype=np.int32),
+        "num_samples_per_mode": np.asarray([num_samples_per_mode], dtype=np.int32),
+        "config_fields": np.asarray(
+            [["phi", "theta_1", "theta_2", "delta_1", "delta_2", "L1", "L2", "Lr", "Ls"]],
+            dtype=object,
+        ),
+        "all_points": all_points,
+    }
+
+    for mode in (1, 2, 3, 4):
+        mat_payload[f"mode{mode}_points"] = mode_points[mode]
+        mat_payload[f"mode{mode}_rotation_matrices"] = mode_rotations[mode]
+        mat_payload[f"mode{mode}_configs"] = mode_configs[mode]
+
+    savemat(path, mat_payload, do_compression=True)
+
+    print(f"Saved MATLAB workspace file: {path.name}")
+    print(f"Saved MATLAB workspace path: {path.resolve()}")
         
 if __name__ == "__main__":
     fig = plt.figure(figsize=(20, 20))
@@ -214,8 +274,9 @@ if __name__ == "__main__":
     num_samples_per_mode = [200000, 200000, 200000, 0]  # 为每个模式指定样本数量，3.4mm 模型只需要 3 个模式
     sampling_method = "uniform"
     uniform_grid_res = 15
-    output_filename = f"workspace_data_{Path(config_name).stem}_{sampling_method}.json"
-    output_path = Path("./data") / output_filename
+    output_stem = f"workspace_data_{Path(config_name).stem}_{sampling_method}"
+    output_json_path = Path("./data") / f"{output_stem}.json"
+    output_mat_path = Path("./data") / f"{output_stem}.mat"
 
     for mode in range(1, 4):  # 3.4mm 模型只需要模式1到模式3
         workspace_data = generate_workspace_data(
@@ -227,4 +288,12 @@ if __name__ == "__main__":
         )
         all_workspace_data.extend(workspace_data)
 
-    save_workspace_to_file(output_path, all_workspace_data)
+    save_workspace_to_file(output_json_path, all_workspace_data)
+    save_workspace_to_mat_file(
+        output_mat_path,
+        all_workspace_data,
+        config_name=config_name,
+        sampling_method=sampling_method,
+        grid_res=uniform_grid_res,
+        num_samples_per_mode=num_samples_per_mode,
+    )
