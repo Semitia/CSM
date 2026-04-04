@@ -1,275 +1,376 @@
 """
 Module: plot_workspace.py
-Description: Script to plot the generated workspace points in 3D.
+Description: Plot translation workspace in a paper-like style from NPZ data.
 """
-import json
-import numpy as np
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.tri import Triangulation
+from scipy.ndimage import binary_fill_holes, gaussian_filter, label
 from scipy.spatial import ConvexHull, Delaunay, cKDTree
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
-from matplotlib.colors import LightSource
+from skimage.measure import marching_cubes
 
-# ===== 配置 =====
-json_path = "./data/workspace_data_csm_cfg_3.4mm_uniform.json"
-RENDER_MODE = "surface"   # ← 'wire' | 'surface' | 'both' | 'smooth_surface' | 'cloud'
-SEPARATE_PLOTS = True  # ← 是否分成四个子图绘制
-SURFACE_GEOMETRY = "alpha_shape"  # ← 'convex_hull' | 'alpha_shape'
-ALPHA_RADIUS = None               # None 时自动估计
-ALPHA_MAX_POINTS = 4000           # alpha shape 前的最大点数，避免 3D Delaunay 爆炸
+NPZ_PATH = Path("./data/workspace_data_csm_cfg_3.4mm_uniform.npz")
+TARGET_FIELD = "all_points"
+OUTPUT_FIGURE = None
 
-MODE_COLORS = {1: "#E41A1C", 2: "#F2DF95", 3: "#9ACDE5", 4: "#C7C7C7"}
-MODE_LABELS = {1: "C1", 2: "C2", 3: "C3", 4: "C4"}
-SURF_ALPHA = 0.35
-WIRE_ALPHA = 0.9
-WIRE_LW = 0.6
+VOXEL_GRID_N = 112
+PADDING_MM = 6.0
+SMOOTH_SIGMA = 1.2
+REACH_ISO_LEVEL = 0.42
+UNREACH_ISO_LEVEL = 0.50
+ALPHA_NEIGHBOR_K = 10
+REACH_ALPHA_SCALE = 1.35
+KEEP_LARGEST_UNREACHABLE = True
+MIN_COMPONENT_RATIO = 0.015
 
-def load_points_by_mode(path):
-    with open(path, "r") as f:
-        data = json.load(f)
-    by_mode = {}
-    for m in (1, 2, 3, 4):
-        pts = [np.asarray(d["pose"][:3], float) for d in data if int(d["mode"]) == m]
-        by_mode[m] = np.vstack(pts) if pts else np.empty((0, 3))
-        print(f"Mode {m}: {by_mode[m].shape[0]} points")
-    return by_mode
+REACH_COLOR = "#b8dfb4"
+REACH_ALPHA = 0.34
+UNREACH_COLOR = "#c69a74"
+UNREACH_ALPHA = 0.42
+EDGE_ALPHA = 0.0
+POINT_COLOR = "#3b82f6"
+BACKGROUND = "white"
 
-def _unique_edges_from_tris(tris):
-    edges = set()
-    for a, b, c in tris:
-        edges.add(tuple(sorted((a, b))))
-        edges.add(tuple(sorted((b, c))))
-        edges.add(tuple(sorted((c, a))))
-    return edges
+VIEW_ELEV = 18
+VIEW_AZIM = -38
+SHOW_AXES = True
+
+ALPHA_FACE_BATCH = 1024
+ALPHA_QUERY_BATCH = 8192
 
 
-def _downsample_points_for_alpha(points, max_points):
-    if points.shape[0] <= max_points:
-        return points
-
-    mins = points.min(axis=0)
-    spans = np.maximum(points.max(axis=0) - mins, 1e-12)
-    voxel_size = (np.prod(spans) / max_points) ** (1.0 / 3.0)
-    voxel_size = max(voxel_size, 1e-12)
-
-    while True:
-        grid_idx = np.floor((points - mins) / voxel_size).astype(np.int64)
-        _, unique_idx = np.unique(grid_idx, axis=0, return_index=True)
-        reduced = points[np.sort(unique_idx)]
-        if reduced.shape[0] <= max_points or voxel_size >= spans.max():
-            return reduced
-        voxel_size *= 1.15
+def load_points(npz_path, field_name):
+    payload = np.load(npz_path)
+    if field_name not in payload:
+        raise KeyError(f"Field '{field_name}' not found in {npz_path}")
+    pts = np.asarray(payload[field_name], dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"Field '{field_name}' must have shape (N, 3), got {pts.shape}")
+    return pts
 
 
-def _tetra_circumsphere_radii(tetra):
+def convert_points_to_mm(points):
+    span = points.max(axis=0) - points.min(axis=0)
+    scale = 1000.0 if np.max(np.abs(points)) < 1.0 and np.max(span) < 1.0 else 1.0
+    return points * scale, scale
+
+
+def unique_points(points, decimals=6):
+    return np.unique(np.round(points, decimals=decimals), axis=0)
+
+
+def padded_bounds(points, padding_mm):
+    mins = points.min(axis=0) - padding_mm
+    maxs = points.max(axis=0) + padding_mm
+    return mins, maxs
+
+
+def build_grid(points, grid_n, padding_mm):
+    mins, maxs = padded_bounds(points, padding_mm)
+    x = np.linspace(mins[0], maxs[0], grid_n)
+    y = np.linspace(mins[1], maxs[1], grid_n)
+    z = np.linspace(mins[2], maxs[2], grid_n)
+    X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
+    spacing = (x[1] - x[0], y[1] - y[0], z[1] - z[0])
+    origin = np.array([x[0], y[0], z[0]], dtype=float)
+    return X, Y, Z, spacing, origin
+
+
+def estimate_reach_alpha(points, k=ALPHA_NEIGHBOR_K, scale=REACH_ALPHA_SCALE):
+    if points.shape[0] < 8:
+        return np.inf
+    tree = cKDTree(points)
+    distances, _ = tree.query(points, k=min(k, points.shape[0]))
+    kth = distances[:, -1]
+    return float(scale * np.median(kth))
+
+
+def tetra_circumsphere_radii(tetra):
     a = tetra[:, 0, :]
     b = tetra[:, 1, :]
     c = tetra[:, 2, :]
     d = tetra[:, 3, :]
 
     m = 2.0 * np.stack((b - a, c - a, d - a), axis=1)
-    rhs = np.stack((
-        np.sum(b * b, axis=1) - np.sum(a * a, axis=1),
-        np.sum(c * c, axis=1) - np.sum(a * a, axis=1),
-        np.sum(d * d, axis=1) - np.sum(a * a, axis=1),
-    ), axis=1)
+    rhs = np.stack(
+        (
+            np.sum(b * b, axis=1) - np.sum(a * a, axis=1),
+            np.sum(c * c, axis=1) - np.sum(a * a, axis=1),
+            np.sum(d * d, axis=1) - np.sum(a * a, axis=1),
+        ),
+        axis=1,
+    )
 
     radii = np.full(tetra.shape[0], np.inf, dtype=float)
-    try:
-        centers = np.linalg.solve(m, rhs[..., np.newaxis]).squeeze(-1)
-        radii = np.linalg.norm(centers - a, axis=1)
-    except np.linalg.LinAlgError:
-        for i in range(tetra.shape[0]):
-            try:
-                center = np.linalg.solve(m[i], rhs[i])
-                radii[i] = np.linalg.norm(center - a[i])
-            except np.linalg.LinAlgError:
-                continue
+    for idx in range(tetra.shape[0]):
+        try:
+            center = np.linalg.solve(m[idx], rhs[idx])
+            radii[idx] = np.linalg.norm(center - a[idx])
+        except np.linalg.LinAlgError:
+            continue
     return radii
 
 
-def _estimate_alpha_radius(points):
-    if points.shape[0] < 8:
-        return np.inf
-    tree = cKDTree(points)
-    distances, _ = tree.query(points, k=min(8, points.shape[0]))
-    kth = distances[:, -1]
-    return 2.5 * np.median(kth)
+def build_alpha_boundary_faces(points, alpha_radius):
+    if points.shape[0] < 4:
+        return np.empty((0, 3), dtype=int)
 
-
-def _alpha_shape_mesh(points, alpha_radius=None, max_points=4000):
-    reduced = _downsample_points_for_alpha(points, max_points)
-    if reduced.shape[0] < 4:
-        return reduced, np.empty((0, 3), dtype=int)
-
-    delaunay = Delaunay(reduced, qhull_options="QJ")
-    tetra_idx = delaunay.simplices
-    tetra = reduced[tetra_idx]
-    radii = _tetra_circumsphere_radii(tetra)
-    alpha = _estimate_alpha_radius(reduced) if alpha_radius is None else alpha_radius
-    keep = tetra_idx[radii <= alpha]
-
+    tetra_idx = Delaunay(points, qhull_options="QJ").simplices
+    tetra = points[tetra_idx]
+    radii = tetra_circumsphere_radii(tetra)
+    keep = tetra_idx[radii <= alpha_radius]
     if keep.size == 0:
-        hull = ConvexHull(reduced, qhull_options="QJ")
-        return reduced, hull.simplices
+        return np.empty((0, 3), dtype=int)
 
-    faces = np.concatenate((
-        keep[:, [0, 1, 2]],
-        keep[:, [0, 1, 3]],
-        keep[:, [0, 2, 3]],
-        keep[:, [1, 2, 3]],
-    ), axis=0)
+    faces = np.concatenate(
+        (
+            keep[:, [0, 1, 2]],
+            keep[:, [0, 1, 3]],
+            keep[:, [0, 2, 3]],
+            keep[:, [1, 2, 3]],
+        ),
+        axis=0,
+    )
     faces = np.sort(faces, axis=1)
     unique_faces, counts = np.unique(faces, axis=0, return_counts=True)
-    boundary = unique_faces[counts == 1]
-
-    if boundary.size == 0:
-        hull = ConvexHull(reduced, qhull_options="QJ")
-        return reduced, hull.simplices
-
-    return reduced, boundary
+    return unique_faces[counts == 1]
 
 
-def _build_surface_mesh(points, geometry_mode):
-    if geometry_mode == "alpha_shape":
-        return _alpha_shape_mesh(points, alpha_radius=ALPHA_RADIUS, max_points=ALPHA_MAX_POINTS)
-    if geometry_mode == "convex_hull":
-        hull = ConvexHull(points, qhull_options="QJ")
-        return points, hull.simplices
-    raise ValueError(f"Unsupported surface geometry: {geometry_mode}")
+def points_in_hull(query_points, hull_points):
+    if hull_points.shape[0] < 4:
+        return np.zeros(query_points.shape[0], dtype=bool)
+    delaunay = Delaunay(hull_points, qhull_options="QJ")
+    return delaunay.find_simplex(query_points) >= 0
 
-def draw_shell(ax, points, color, label=None, mode="surface"):
-    P = np.unique(points.round(9), axis=0)
 
-    if mode == "cloud":
-        ax.scatter(
-            P[:, 0],
-            P[:, 1],
-            P[:, 2],
-            c=color,
-            s=0.5,
-            alpha=0.03,
-            edgecolors="none",
-            label=label,
-        )
-        return
+def alpha_shape_mask(points, query_points, alpha_radius):
+    boundary_faces = build_alpha_boundary_faces(points, alpha_radius)
+    if boundary_faces.size == 0:
+        return points_in_hull(query_points, points)
 
-    if P.shape[0] < 4:
-        ax.scatter(P[:,0], P[:,1], P[:,2], s=3, color=color, label=label)
-        return
+    hull_mask = points_in_hull(query_points, points)
+    if not np.any(hull_mask):
+        return hull_mask
 
-    surface_points, tris = _build_surface_mesh(P, SURFACE_GEOMETRY)
-    if tris.size == 0:
-        ax.scatter(P[:,0], P[:,1], P[:,2], s=3, color=color, label=label)
-        return
+    boundary = points[boundary_faces]
+    tri_a = boundary[:, 0, :]
+    tri_b = boundary[:, 1, :]
+    tri_c = boundary[:, 2, :]
 
-    if mode in ("surface", "both"):
-        surf = ax.plot_trisurf(
-            surface_points[:,0], surface_points[:,1], surface_points[:,2],
-            triangles=tris,
-            linewidth=0,
-            edgecolor="none",
-            antialiased=True,
-            alpha=SURF_ALPHA,
-            color=color,
-            shade=False
-        )
-    elif mode == "smooth_surface":
-        ls = LightSource(azdeg=30, altdeg=60)
-        surf = ax.plot_trisurf(
-            surface_points[:,0], surface_points[:,1], surface_points[:,2],
-            triangles=tris,
-            linewidth=0,
-            edgecolor="none",
-            antialiased=True,
-            alpha=SURF_ALPHA,
-            color=color,
-            shade=True,
-            lightsource=ls,
-        )
+    selected = query_points[hull_mask]
+    direction = np.array([1.0, 0.0, 0.0], dtype=float)
+    eps = 1e-9
+    crossings = np.zeros(selected.shape[0], dtype=np.int32)
 
-    if mode in ("surface", "both", "smooth_surface"):
-        try:
-            surf.set_edgecolor((0, 0, 0, 0))
-        except Exception:
-            pass
+    for start in range(0, boundary.shape[0], ALPHA_FACE_BATCH):
+        stop = min(start + ALPHA_FACE_BATCH, boundary.shape[0])
+        a = tri_a[start:stop]
+        b = tri_b[start:stop]
+        c = tri_c[start:stop]
+        edge1 = b - a
+        edge2 = c - a
+        h = np.cross(np.broadcast_to(direction, edge2.shape), edge2)
+        det = np.einsum("ij,ij->i", edge1, h)
+        valid = np.abs(det) > eps
+        if not np.any(valid):
+            continue
 
-    if mode in ("wire", "both"):
-        edges = _unique_edges_from_tris(tris)
-        segments = [(surface_points[i], surface_points[j]) for (i, j) in edges]
-        lc = Line3DCollection(segments, colors=color, linewidths=WIRE_LW,
-                              alpha=WIRE_ALPHA if mode == "wire" else 0.6)
-        ax.add_collection3d(lc)
+        a = a[valid]
+        edge1 = edge1[valid]
+        edge2 = edge2[valid]
+        h = h[valid]
+        inv_det = (1.0 / det[valid]).astype(selected.dtype, copy=False)
+        ray_cross = np.broadcast_to(direction, edge1.shape)
 
-    if label and mode != "cloud":
-        ax.plot([], [], [], color=color, label=label)
+        for query_start in range(0, selected.shape[0], ALPHA_QUERY_BATCH):
+            query_stop = min(query_start + ALPHA_QUERY_BATCH, selected.shape[0])
+            query_chunk = selected[query_start:query_stop]
+
+            s = query_chunk[:, None, :] - a[None, :, :]
+            u = np.einsum("qti,ti->qt", s, h) * inv_det[None, :]
+            qvec = np.cross(s, edge1[None, :, :])
+            v = np.einsum("ti,qti->qt", edge2, qvec) * inv_det[None, :]
+            t = np.einsum("ti,qti->qt", ray_cross, qvec) * inv_det[None, :]
+
+            hits = (u >= -eps) & (v >= -eps) & ((u + v) <= 1.0 + eps) & (t > eps)
+            crossings[query_start:query_stop] += np.count_nonzero(hits, axis=1)
+
+    inside = (crossings % 2) == 1
+    mask = np.zeros(query_points.shape[0], dtype=bool)
+    mask[hull_mask] = inside
+    return mask
+
+
+def largest_components(mask, min_ratio=MIN_COMPONENT_RATIO, keep_largest_only=False):
+    labeled, count = label(mask)
+    if count == 0:
+        return mask
+
+    component_sizes = np.bincount(labeled.ravel())
+    component_sizes[0] = 0
+    if keep_largest_only:
+        keep = int(np.argmax(component_sizes))
+        return labeled == keep
+
+    max_size = component_sizes.max()
+    keep_labels = np.flatnonzero(component_sizes >= max_size * min_ratio)
+    if keep_labels.size == 0:
+        keep_labels = np.array([int(np.argmax(component_sizes))])
+    return np.isin(labeled, keep_labels)
+
+
+def smooth_mask(mask, sigma):
+    return gaussian_filter(mask.astype(float), sigma=sigma)
+
+
+def mesh_from_scalar(scalar, spacing, origin, iso_level):
+    if scalar.max() <= iso_level:
+        return None, None
+    verts, faces, _, _ = marching_cubes(scalar, level=iso_level, spacing=spacing)
+    verts = verts + origin
+    return verts, faces
+
+
+def compute_equal_limits(points, padding_mm):
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    center = 0.5 * (mins + maxs)
+    half_range = 0.5 * np.max(maxs - mins) + padding_mm
+    return np.array(
+        [
+            center[0] - half_range,
+            center[0] + half_range,
+            center[1] - half_range,
+            center[1] + half_range,
+            center[2] - half_range,
+            center[2] + half_range,
+        ],
+        dtype=float,
+    )
+
+
+def plot_mesh(ax, vertices, faces, color, alpha):
+    tri = Triangulation(vertices[:, 0], vertices[:, 1], triangles=faces)
+    surf = ax.plot_trisurf(
+        tri,
+        vertices[:, 2],
+        color=color,
+        alpha=alpha,
+        linewidth=0.0,
+        edgecolor=(0, 0, 0, EDGE_ALPHA),
+        antialiased=True,
+        shade=False,
+    )
+    try:
+        surf.set_edgecolor((0, 0, 0, EDGE_ALPHA))
+    except Exception:
+        pass
+
+
+def style_axes(ax, points):
+    ax.set_box_aspect([1, 1, 1])
+    lims = compute_equal_limits(points, PADDING_MM)
+    ax.set_xlim(lims[0], lims[1])
+    ax.set_ylim(lims[2], lims[3])
+    ax.set_zlim(lims[4], lims[5])
+    ax.view_init(elev=VIEW_ELEV, azim=VIEW_AZIM)
+
+    if SHOW_AXES:
+        ax.set_xlabel("X Axis (mm)")
+        ax.set_ylabel("Y Axis (mm)")
+        ax.set_zlabel("Z Axis (mm)")
+        ax.grid(True, alpha=0.25)
+    else:
+        ax.set_axis_off()
+
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_facecolor((1, 1, 1, 0))
+        axis.pane.set_edgecolor((1, 1, 1, 0))
+
+
+def build_workspace_shells(points_mm):
+    X, Y, Z, spacing, origin = build_grid(points_mm, VOXEL_GRID_N, PADDING_MM)
+    query_points = np.column_stack((X.ravel(), Y.ravel(), Z.ravel()))
+
+    alpha_radius = estimate_reach_alpha(points_mm)
+    reach_mask = alpha_shape_mask(points_mm, query_points, alpha_radius).reshape(X.shape)
+    reach_mask = binary_fill_holes(reach_mask)
+
+    outer_mask = points_in_hull(query_points, points_mm).reshape(X.shape)
+    outer_mask = binary_fill_holes(outer_mask)
+
+    unreach_mask = outer_mask & ~reach_mask
+    unreach_mask = largest_components(
+        unreach_mask,
+        min_ratio=MIN_COMPONENT_RATIO,
+        keep_largest_only=KEEP_LARGEST_UNREACHABLE,
+    )
+
+    reach_scalar = smooth_mask(reach_mask, SMOOTH_SIGMA)
+    unreach_scalar = smooth_mask(unreach_mask, SMOOTH_SIGMA)
+
+    reach_vertices, reach_faces = mesh_from_scalar(reach_scalar, spacing, origin, REACH_ISO_LEVEL)
+    unreach_vertices, unreach_faces = mesh_from_scalar(unreach_scalar, spacing, origin, UNREACH_ISO_LEVEL)
+
+    return {
+        "reach_vertices": reach_vertices,
+        "reach_faces": reach_faces,
+        "unreach_vertices": unreach_vertices,
+        "unreach_faces": unreach_faces,
+        "alpha_radius": alpha_radius,
+        "grid_shape": X.shape,
+        "reach_voxels": int(np.count_nonzero(reach_mask)),
+        "outer_voxels": int(np.count_nonzero(outer_mask)),
+        "unreach_voxels": int(np.count_nonzero(unreach_mask)),
+    }
+
+
+def print_debug_info(points_raw, points_mm, scale_to_mm, shell):
+    raw_min = points_raw.min(axis=0)
+    raw_max = points_raw.max(axis=0)
+    mm_min = points_mm.min(axis=0)
+    mm_max = points_mm.max(axis=0)
+    print(f"Loaded points            : {points_mm.shape[0]}")
+    print(f"Unit scale to mm         : x{scale_to_mm:g}")
+    print(f"Raw min/max              : {raw_min} / {raw_max}")
+    print(f"MM min/max               : {mm_min} / {mm_max}")
+    print(f"MM span                  : {mm_max - mm_min}")
+    print(f"Estimated reach alpha    : {shell['alpha_radius']:.6f} mm")
+    print(f"Voxel grid size          : {shell['grid_shape']}")
+    print(f"Outer voxels             : {shell['outer_voxels']}")
+    print(f"Reachable voxels         : {shell['reach_voxels']}")
+    print(f"Unreachable voxels       : {shell['unreach_voxels']}")
+
 
 def main():
-    by_mode = load_points_by_mode(json_path)
+    raw_points = load_points(NPZ_PATH, TARGET_FIELD)
+    points_mm, scale_to_mm = convert_points_to_mm(raw_points)
+    points_mm = unique_points(points_mm)
+    shell = build_workspace_shells(points_mm)
 
-    if SEPARATE_PLOTS:
-        fig = plt.figure(figsize=(10, 10))
-        axes = [fig.add_subplot(2, 2, i+1, projection="3d") for i in range(4)]
-        # ===== 统一范围计算 =====
-        all_pts = np.vstack([pts for pts in by_mode.values() if pts.size])
-        for m, ax in zip((1, 2, 3, 4), axes):
-            pts = by_mode[m]
-            if pts.size == 0:
-                continue
-            draw_shell(ax, pts, MODE_COLORS[m], label=MODE_LABELS[m], mode=RENDER_MODE)
-            ax.set_title(MODE_LABELS[m])
-            ax.set_box_aspect([1, 1, 1])
-            # ax.grid(False)
-            # ax.set_proj_type('ortho')
-            # ax.view_init(elev=0, azim=90)
-            # === 每个子图都用相同的坐标范围 ===
-            if all_pts.size:
-                # 计算数据范围并设置相等的轴范围以保持 1:1:1 比例
-                data_range = all_pts.max() - all_pts.min()
-                center = (all_pts.max(axis=0) + all_pts.min(axis=0)) / 2
-                max_range = data_range.max() * 1.1 / 2  # 10% 留白
-                ax.set_xlim(center[0] - max_range, center[0] + max_range)
-                ax.set_ylim(center[1] - max_range, center[1] + max_range)
-                ax.set_zlim(center[2] - max_range, center[2] + max_range)
-            # 背景透明优化
-            # for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-            #     axis.pane.set_facecolor((1, 1, 1, 0))
-            #     axis.pane.fill = False
-        plt.tight_layout()
+    fig = plt.figure(figsize=(8.6, 7.2), facecolor=BACKGROUND)
+    ax = fig.add_subplot(111, projection="3d")
 
+    if shell["unreach_vertices"] is not None and shell["unreach_faces"] is not None:
+        plot_mesh(ax, shell["unreach_vertices"], shell["unreach_faces"], UNREACH_COLOR, UNREACH_ALPHA)
+    if shell["reach_vertices"] is not None and shell["reach_faces"] is not None:
+        plot_mesh(ax, shell["reach_vertices"], shell["reach_faces"], REACH_COLOR, REACH_ALPHA)
 
-    else:
-        all_pts = np.vstack([pts for pts in by_mode.values() if pts.size])
-        fig = plt.figure(figsize=(7, 7))
-        ax = fig.add_subplot(111, projection="3d")
-        ax.set_box_aspect([1, 1, 1])
-        for m in (1, 2, 3, 4):
-            pts = by_mode[m]
-            if pts.size == 0:
-                continue
-            draw_shell(ax, pts, MODE_COLORS[m], label=MODE_LABELS[m], mode=RENDER_MODE)
+    if shell["reach_vertices"] is None and shell["unreach_vertices"] is None:
+        ax.scatter(points_mm[:, 0], points_mm[:, 1], points_mm[:, 2], s=1.0, c=POINT_COLOR, alpha=0.18)
 
-        if all_pts.size:
-            # 计算数据范围并设置相等的轴范围以保持 1:1:1 比例
-            data_range = all_pts.max() - all_pts.min()
-            center = (all_pts.max(axis=0) + all_pts.min(axis=0)) / 2
-            max_range = data_range.max() * 1.1 / 2  # 10% 留白
-            ax.set_xlim(center[0] - max_range, center[0] + max_range)
-            ax.set_ylim(center[1] - max_range, center[1] + max_range)
-            ax.set_zlim(center[2] - max_range, center[2] + max_range)
+    style_axes(ax, points_mm)
+    ax.set_title("Translation Workspace", pad=14)
+    plt.tight_layout()
 
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        if by_label:
-            ax.legend(by_label.values(), by_label.keys(), loc="upper right", frameon=False)
-        # ax.set_proj_type('ortho')
-        # ax.view_init(elev=0, azim=90)
-        # ax.grid(False)
-        # for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-        #     axis.pane.set_facecolor((1, 1, 1, 0))
-        #     axis.pane.fill = False
-        plt.tight_layout()
+    if OUTPUT_FIGURE:
+        fig.savefig(OUTPUT_FIGURE, dpi=300, bbox_inches="tight", facecolor=BACKGROUND)
 
+    print_debug_info(raw_points, points_mm, scale_to_mm, shell)
     plt.show()
+
 
 if __name__ == "__main__":
     main()
