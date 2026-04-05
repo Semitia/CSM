@@ -19,7 +19,8 @@ from csm.model import CSM
 CONFIG_NAME = "csm_cfg_0.yaml"
 CONFIG_PATH = Path("./config") / CONFIG_NAME
 # PLOT_MODES = [1, 2, 3, 4]
-PLOT_MODES = [2]
+PLOT_MODES = [0]
+COMBINED_SOURCE_MODES = (1, 2, 3, 4)
 CACHE_DIR = Path("./data/profile_cache")
 USE_CACHE = True
 FORCE_REBUILD_CACHE = False
@@ -49,6 +50,8 @@ PROFILE_ENDPOINT_ARC_SAMPLES = 48
 PROFILE_ENDPOINT_LINE_RADIUS_RATIO = 24.0
 PROFILE_ENDPOINT_MAX_TURN = 0.5 * np.pi
 PROFILE_ENDPOINT_FIT_WINDOWS = (5, 7, 9, 11, 15, 21, 31)
+PROFILE_MODE0_VOID_MIN_HEIGHT_BINS = 2
+MODE0_DEBUG = False
 # ===== Surface rendering =====
 REVOLVE_SAMPLES = 40
 CAP_RADIAL_SAMPLES = 18
@@ -59,6 +62,7 @@ SIDE_VIEW_STYLE = "pseudo_3d"   # "pseudo_3d" | "real_3d"
 MODE_COLORS = {1: "#E9A3A7", 2: "#F0E0AA", 3: "#9FD4EA", 4: "#CFCFCF"}
 MODE_LABELS = {1: "C1", 2: "C2", 3: "C3", 4: "C4"}
 UNREACHABLE_COLOR = "#D79A6B"
+COMBINED_REACHABLE_COLOR = "#86BFA3"
 
 REACH_ALPHA = 0.34
 UNREACHABLE_ALPHA = 0.40
@@ -87,6 +91,18 @@ def _linspace_from_zero(stop, num):
 
 def _cache_file_path(mode):
     return CACHE_DIR / f"{CONFIG_PATH.stem}_mode{mode}_profile_cache.npz"
+
+
+def _display_color_for_mode(mode):
+    if mode == 0:
+        return COMBINED_REACHABLE_COLOR
+    return MODE_COLORS[mode]
+
+
+def _display_label_for_mode(mode):
+    if mode == 0:
+        return "Combined"
+    return MODE_LABELS[mode]
 
 
 def _current_cache_metadata(mode):
@@ -182,6 +198,8 @@ def _count_mode_side_samples(csm, mode, sample_cfg):
 
 
 def sample_mode_side_points(csm, mode, sample_cfg):
+    if mode == 0:
+        raise ValueError("Mode 0 is a combined visualization mode and does not support direct sampling.")
     _prepare_csm_for_mode(csm, mode)
 
     length_res = int(sample_cfg["length"])
@@ -861,68 +879,7 @@ def _build_mode1_profile_from_side_points(side_points):
     }
 
 
-def _build_mode1_plot_curves(profile):
-    upper_r = np.asarray(profile["mode1_r"], dtype=float)
-    lower_r = np.asarray(profile["mode1_r"], dtype=float)
-    upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
-    lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
-
-    connected = _connect_curve_endpoints(
-        upper_r,
-        upper_z,
-        lower_r,
-        lower_z,
-        at_end_a=True,
-        at_end_b=True,
-    )
-    if connected is None:
-        return upper_r, upper_z, lower_r, lower_z
-    return connected
-
-
-def _build_plot_curves(profile, mode):
-    if mode == 1 and "mode1_r" in profile:
-        return _build_mode1_plot_curves(profile)
-
-    z_outer = np.asarray(profile["z"], dtype=float)
-    r_outer = np.asarray(profile["outer_r"], dtype=float)
-
-    inner_mask = np.asarray(profile["inner_r"], dtype=float) > 0.0
-    if np.count_nonzero(inner_mask) < 3:
-        return z_outer, r_outer, None, None
-
-    z_inner = np.asarray(profile["z"][inner_mask], dtype=float)
-    r_inner = np.asarray(profile["inner_r"][inner_mask], dtype=float)
-
-    if mode == 1:
-        z_outer, r_outer = _fit_axis_arc_from_endpoint(z_outer, r_outer, axis_side="upper")
-        z_outer, r_outer = _smooth_curve_for_plot(z_outer, r_outer, upsample_factor=5, sigma=1.0)
-        z_inner, r_inner = _fit_axis_arc_from_endpoint(z_inner, r_inner, axis_side="lower")
-        z_inner, r_inner = _smooth_curve_for_plot(z_inner, r_inner, upsample_factor=5, sigma=0.8)
-        return z_outer, r_outer, z_inner, r_inner
-
-    z_outer, r_outer = _append_axis_arc(
-        z_outer,
-        r_outer,
-        max_extend_bins=PROFILE_INNER_APEX_MAX_EXTEND_BINS,
-    )
-    z_inner, r_inner = _append_axis_arc(
-        z_inner,
-        r_inner,
-        max_extend_bins=PROFILE_INNER_APEX_MAX_EXTEND_BINS,
-    )
-
-    connected = _connect_curve_endpoints(r_outer, z_outer, r_inner, z_inner, at_end_a=False, at_end_b=False)
-    if connected is not None:
-        r_outer, z_outer, r_inner, z_inner = connected
-
-    return z_outer, r_outer, z_inner, r_inner
-
-
-def build_profile_from_side_points(side_points, mode=None):
-    if mode == 1:
-        return _build_mode1_profile_from_side_points(side_points)
-
+def _build_regular_profile_from_side_points(side_points):
     if side_points.shape[0] < 8:
         return None
 
@@ -967,7 +924,6 @@ def build_profile_from_side_points(side_points, mode=None):
         outer_valid = gaussian_filter1d(outer_valid, sigma=PROFILE_CURVE_SMOOTH_SIGMA, mode="nearest")
     outer_valid = np.maximum(outer_valid, outer_raw)
 
-    # Extend the outer curve to the true sampled z-extrema instead of stopping at bin centers.
     outer_valid = np.concatenate(([row_point_max[first_outer]], outer_valid, [row_point_max[last_outer]]))
     z_valid = np.concatenate(([z_min], z_valid, [z_max]))
 
@@ -1026,6 +982,361 @@ def build_profile_from_side_points(side_points, mode=None):
         "outer_r": outer_valid,
         "inner_r": inner_valid,
     }
+
+
+def _build_mode0_profile_from_side_points(side_points):
+    regular_profile = _build_regular_profile_from_side_points(side_points)
+    if regular_profile is None:
+        return None
+
+    r = np.asarray(side_points[:, 0], dtype=float)
+    z = np.asarray(side_points[:, 1], dtype=float)
+    r_max = float(np.max(r))
+    z_floor = float(np.min(z))
+    if np.isclose(r_max, 0.0):
+        return regular_profile
+
+    r_edges = np.linspace(0.0, r_max, PROFILE_R_BINS + 1)
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+    r_bin_idx = np.clip(np.digitize(r, r_edges) - 1, 0, len(r_centers) - 1)
+
+    lower_z = np.full(r_centers.shape, np.nan, dtype=float)
+    for i in range(len(r_centers)):
+        col_points = z[r_bin_idx == i]
+        if col_points.size > 0:
+            lower_z[i] = np.min(col_points)
+
+    valid = np.isfinite(lower_z)
+    if np.count_nonzero(valid) < 4:
+        return regular_profile
+
+    lower_raw = np.interp(r_centers, r_centers[valid], lower_z[valid])
+    lower_smooth = lower_raw.copy()
+    if PROFILE_CURVE_SMOOTH_SIGMA > 0:
+        lower_smooth = gaussian_filter1d(lower_smooth, sigma=0.85 * PROFILE_CURVE_SMOOTH_SIGMA, mode="nearest")
+    lower_smooth = np.minimum(lower_smooth, lower_raw)
+
+    radial_res = r_max / max(PROFILE_R_BINS, 1)
+    z_range = max(float(np.max(z) - z_floor), 1e-9)
+    z_tol = max(0.5 * radial_res, PROFILE_MODE0_VOID_MIN_HEIGHT_BINS * z_range / max(PROFILE_Z_BINS, 1))
+    void_mask = lower_smooth > z_floor + z_tol
+    if np.count_nonzero(void_mask) < 4:
+        return regular_profile
+
+    void_keep = _longest_true_run(void_mask, np.maximum(lower_smooth - z_floor, 0.0))
+    if np.count_nonzero(void_keep) < 4:
+        return regular_profile
+
+    first = int(np.flatnonzero(void_keep)[0])
+    last = int(np.flatnonzero(void_keep)[-1])
+    void_r_core = r_centers[first:last + 1]
+    void_upper_core = lower_smooth[first:last + 1]
+
+    void_r = np.concatenate(([0.0], void_r_core))
+    axis_mask = r <= r_edges[1]
+    axis_lower = float(np.min(z[axis_mask])) if np.any(axis_mask) else float(np.min(z))
+    void_upper = np.concatenate(([axis_lower], void_upper_core))
+    void_upper = np.maximum(void_upper, z_floor)
+
+    regular_profile["mode0_void_r"] = void_r
+    regular_profile["mode0_void_upper_z"] = void_upper
+    regular_profile["mode0_void_floor_z"] = float(z_floor)
+    regular_profile["inner_r"] = np.zeros_like(regular_profile["inner_r"])
+    return regular_profile
+
+
+def _curve_points(r_vals, z_vals):
+    r_vals = np.asarray(r_vals, dtype=float)
+    z_vals = np.asarray(z_vals, dtype=float)
+    if r_vals.size == 0 or z_vals.size == 0 or r_vals.size != z_vals.size:
+        return np.empty((0, 2), dtype=float)
+    return np.column_stack((r_vals, z_vals))
+
+
+def _closest_curve_points(curve_a, curve_b):
+    curve_a = np.asarray(curve_a, dtype=float)
+    curve_b = np.asarray(curve_b, dtype=float)
+    if curve_a.ndim != 2 or curve_b.ndim != 2 or curve_a.shape[1] != 2 or curve_b.shape[1] != 2:
+        return None
+    if curve_a.shape[0] == 0 or curve_b.shape[0] == 0:
+        return None
+
+    delta = curve_a[:, np.newaxis, :] - curve_b[np.newaxis, :, :]
+    dist_sq = np.sum(delta * delta, axis=2)
+    idx_a, idx_b = np.unravel_index(np.argmin(dist_sq), dist_sq.shape)
+    point = 0.5 * (curve_a[idx_a] + curve_b[idx_b])
+    return int(idx_a), int(idx_b), point
+
+
+def _intersect_endpoint_helper_with_vertical(helper, r_value):
+    if helper is None:
+        return None
+
+    r_value = float(r_value)
+    tol = 1e-9
+
+    if helper["kind"] == "line":
+        dir_x = float(helper["dir_out"][0])
+        if abs(dir_x) <= tol:
+            if abs(float(helper["point"][0]) - r_value) > 1e-6:
+                return None
+            return np.array([r_value, float(helper["point"][1])], dtype=float)
+        length = (r_value - float(helper["point"][0])) / dir_x
+        if length < -1e-9:
+            return None
+        return helper["point"] + max(length, 0.0) * helper["dir_out"]
+
+    dx = r_value - float(helper["center"][0])
+    radius_sq = float(helper["radius"] * helper["radius"])
+    rem = radius_sq - dx * dx
+    if rem < -1e-9:
+        return None
+    rem = max(rem, 0.0)
+    dz = float(np.sqrt(rem))
+    candidates = [
+        np.array([r_value, float(helper["center"][1]) + dz], dtype=float),
+        np.array([r_value, float(helper["center"][1]) - dz], dtype=float),
+    ]
+
+    best_point = None
+    best_progress = np.inf
+    for candidate in candidates:
+        progress = _helper_progress(helper, candidate)
+        if progress is None:
+            continue
+        if progress < best_progress:
+            best_progress = progress
+            best_point = candidate
+    return best_point
+
+
+def _concat_curve_segments(segments):
+    merged = []
+    for segment in segments:
+        segment = np.asarray(segment, dtype=float)
+        if segment.ndim != 2 or segment.shape[0] == 0:
+            continue
+        if merged and np.allclose(merged[-1][-1], segment[0], atol=1e-9):
+            merged.append(segment[1:])
+        else:
+            merged.append(segment)
+
+    if not merged:
+        return np.empty((0, 2), dtype=float)
+    return np.vstack(merged)
+
+
+def _extract_axis_flat_segment_near_max_radius(curve, tol=1e-5):
+    curve = np.asarray(curve, dtype=float)
+    if curve.ndim != 2 or curve.shape[0] < 2:
+        return curve
+
+    r_vals = curve[:, 0]
+    max_r = float(np.max(r_vals))
+    mask = r_vals >= max_r - tol
+    if not np.any(mask):
+        return curve.copy()
+
+    indices = np.flatnonzero(mask)
+    splits = np.where(np.diff(indices) > 1)[0]
+    best_start = 0
+    best_end = 0
+    best_len = -1
+    start_idx = 0
+    for split_idx in list(splits) + [len(indices) - 1]:
+        end_idx = split_idx
+        run = indices[start_idx:end_idx + 1]
+        if run.size > best_len:
+            best_len = run.size
+            best_start = int(run[0])
+            best_end = int(run[-1])
+        start_idx = split_idx + 1
+
+    return curve[best_start:best_end + 1].copy()
+
+
+def _build_mode0_void_outline_from_source_profiles(source_profiles, mode0_outer_curve=None):
+    if not all(mode in source_profiles for mode in COMBINED_SOURCE_MODES):
+        return None
+
+    _upper_r, _upper_z, mode1_lower_r, mode1_lower_z = _build_mode1_plot_curves(source_profiles[1])
+    mode2_z, mode2_outer_r, _, _ = _build_plot_curves(source_profiles[2], 2)
+    mode4_outer_z, mode4_outer_r, _, _ = _build_plot_curves(source_profiles[4], 4)
+    _, _, mode3_inner_z, mode3_inner_r = _build_plot_curves(source_profiles[3], 3)
+    _, _, mode4_inner_z, mode4_inner_r = _build_plot_curves(source_profiles[4], 4)
+
+    if mode3_inner_z is None or mode4_inner_z is None:
+        return None
+
+    curve1 = _curve_points(mode1_lower_r, mode1_lower_z)
+    curve2 = _curve_points(mode2_outer_r, mode2_z)  # outer -> axis
+    curve2 = _extract_axis_flat_segment_near_max_radius(curve2)
+    curve3 = _curve_points(mode3_inner_r[::-1], mode3_inner_z[::-1])  # axis -> outer
+    curve4 = _curve_points(mode4_inner_r, mode4_inner_z)[::-1].copy()  # axis -> outer
+    outer_curve = _curve_points(mode4_outer_r, mode4_outer_z)  # outer -> axis
+    target_outer_curve = outer_curve
+    if mode0_outer_curve is not None:
+        candidate_curve = np.asarray(mode0_outer_curve, dtype=float)
+        if candidate_curve.ndim == 2 and candidate_curve.shape[0] >= 2 and candidate_curve.shape[1] == 2:
+            target_outer_curve = candidate_curve
+
+    if curve1.shape[0] < 2 or curve2.shape[0] < 2:
+        return None
+
+    point12 = 0.5 * (curve1[-1] + curve2[0])
+    seg1 = curve1.copy()
+    seg1[-1] = point12
+
+    seg2_seed = curve2.copy()
+    seg2_seed[0] = point12
+    join23 = _closest_curve_points(seg2_seed, curve3)
+    if join23 is None:
+        return None
+    idx2_end, idx3_start, point23 = join23
+    seg2 = seg2_seed[:idx2_end + 1].copy()
+    seg2[-1] = point23
+    seg3_seed = curve3[idx3_start:].copy()
+    seg3_seed[0] = point23
+
+    if seg2.shape[0] < 2 or seg3_seed.shape[0] < 2:
+        return None
+
+    join34 = _closest_curve_points(seg3_seed, curve4)
+    if join34 is None:
+        return None
+    idx3_end, idx4_start, point34 = join34
+    seg3 = seg3_seed[:idx3_end + 1].copy()
+    seg3[-1] = point34
+
+    seg4_seed = curve4[idx4_start:].copy()
+    if seg4_seed.shape[0] < 2:
+        return None
+    seg4_seed[0] = point34
+    seg4 = seg4_seed
+    if seg4.shape[0] < 2:
+        return None
+
+    outer_helper = _build_endpoint_helper(target_outer_curve[:, 0], target_outer_curve[:, 1], at_end=False)
+    tail_window = seg4[-min(12, seg4.shape[0]):]
+    vertical_r = float(np.min(tail_window[:, 0]))
+    join_point = _intersect_endpoint_helper_with_vertical(outer_helper, vertical_r)
+
+    if join_point is None or not np.all(np.isfinite(join_point)):
+        join_point = np.asarray([vertical_r, float(target_outer_curve[0, 1])], dtype=float)
+
+    flat_idx = np.flatnonzero(np.isclose(seg4[:, 0], vertical_r, atol=1e-9))
+    if flat_idx.size > 0:
+        seg4 = seg4[:flat_idx[-1] + 1].copy()
+    if not np.allclose(seg4[-1], join_point, atol=1e-9):
+        seg4 = np.vstack((seg4, join_point[np.newaxis, :]))
+    else:
+        seg4[-1] = join_point
+    target_outer_curve = np.vstack((join_point[np.newaxis, :], target_outer_curve))
+
+    outline = _concat_curve_segments((seg1, seg2, seg3, seg4))
+    if outline.shape[0] < 4:
+        return None
+    return outline, target_outer_curve
+
+
+def _build_mode0_profile_from_sources(side_points, source_profiles):
+    profile = _build_mode0_profile_from_side_points(side_points)
+    if profile is None:
+        return None
+
+    mode0_outer_z, mode0_outer_r, _, _ = _build_plot_curves(profile, 0)
+    mode0_outer_curve = _curve_points(mode0_outer_r, mode0_outer_z)
+    built = _build_mode0_void_outline_from_source_profiles(
+        source_profiles,
+        mode0_outer_curve=mode0_outer_curve,
+    )
+    if built is None:
+        return profile
+    outline, outer_override = built
+
+    profile["mode0_void_outline_r"] = outline[:, 0]
+    profile["mode0_void_outline_z"] = outline[:, 1]
+    profile["mode0_void_floor_z"] = float(np.min(outline[:, 1]))
+    profile["mode0_outer_r"] = outer_override[:, 0]
+    profile["mode0_outer_z"] = outer_override[:, 1]
+    return profile
+
+
+def _build_mode1_plot_curves(profile):
+    upper_r = np.asarray(profile["mode1_r"], dtype=float)
+    lower_r = np.asarray(profile["mode1_r"], dtype=float)
+    upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
+    lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
+
+    connected = _connect_curve_endpoints(
+        upper_r,
+        upper_z,
+        lower_r,
+        lower_z,
+        at_end_a=True,
+        at_end_b=True,
+    )
+    if connected is None:
+        return upper_r, upper_z, lower_r, lower_z
+    return connected
+
+
+def _build_plot_curves(profile, mode):
+    if mode == 0 and "mode0_outer_z" in profile and "mode0_outer_r" in profile:
+        z_outer = np.asarray(profile["mode0_outer_z"], dtype=float)
+        r_outer = np.asarray(profile["mode0_outer_r"], dtype=float)
+        return z_outer, r_outer, None, None
+
+    if mode == 1 and "mode1_r" in profile:
+        return _build_mode1_plot_curves(profile)
+
+    z_outer = np.asarray(profile["z"], dtype=float)
+    r_outer = np.asarray(profile["outer_r"], dtype=float)
+
+    inner_mask = np.asarray(profile["inner_r"], dtype=float) > 0.0
+    if np.count_nonzero(inner_mask) < 3:
+        if mode == 0:
+            z_outer, r_outer = _append_axis_arc(
+                z_outer,
+                r_outer,
+                max_extend_bins=PROFILE_INNER_APEX_MAX_EXTEND_BINS,
+            )
+        return z_outer, r_outer, None, None
+
+    z_inner = np.asarray(profile["z"][inner_mask], dtype=float)
+    r_inner = np.asarray(profile["inner_r"][inner_mask], dtype=float)
+
+    if mode == 1:
+        z_outer, r_outer = _fit_axis_arc_from_endpoint(z_outer, r_outer, axis_side="upper")
+        z_outer, r_outer = _smooth_curve_for_plot(z_outer, r_outer, upsample_factor=5, sigma=1.0)
+        z_inner, r_inner = _fit_axis_arc_from_endpoint(z_inner, r_inner, axis_side="lower")
+        z_inner, r_inner = _smooth_curve_for_plot(z_inner, r_inner, upsample_factor=5, sigma=0.8)
+        return z_outer, r_outer, z_inner, r_inner
+
+    z_outer, r_outer = _append_axis_arc(
+        z_outer,
+        r_outer,
+        max_extend_bins=PROFILE_INNER_APEX_MAX_EXTEND_BINS,
+    )
+    z_inner, r_inner = _append_axis_arc(
+        z_inner,
+        r_inner,
+        max_extend_bins=PROFILE_INNER_APEX_MAX_EXTEND_BINS,
+    )
+
+    connected = _connect_curve_endpoints(r_outer, z_outer, r_inner, z_inner, at_end_a=False, at_end_b=False)
+    if connected is not None:
+        r_outer, z_outer, r_inner, z_inner = connected
+
+    return z_outer, r_outer, z_inner, r_inner
+
+
+def build_profile_from_side_points(side_points, mode=None):
+    if mode == 1:
+        return _build_mode1_profile_from_side_points(side_points)
+    if mode == 0:
+        return _build_mode0_profile_from_side_points(side_points)
+    return _build_regular_profile_from_side_points(side_points)
 
 
 def _build_revolve_faces(n_axial, n_theta):
@@ -1138,7 +1449,150 @@ def _plot_profile_wall(ax, z_vals, r_vals, color, alpha, label=None, y_plane=0.0
         ax.plot([], [], [], color=color, alpha=alpha, label=label)
 
 
+def _plot_symmetric_band_wall(ax, r_vals, lower_z_vals, upper_z_vals, color, alpha, label=None, y_plane=0.0):
+    r_vals = np.asarray(r_vals, dtype=float)
+    lower_z_vals = np.asarray(lower_z_vals, dtype=float)
+    upper_z_vals = np.asarray(upper_z_vals, dtype=float)
+    if r_vals.size < 2 or lower_z_vals.size != r_vals.size or upper_z_vals.size != r_vals.size:
+        return
+
+    x_poly = np.concatenate([r_vals, r_vals[::-1], -r_vals, -r_vals[::-1]])
+    z_poly = np.concatenate([upper_z_vals, lower_z_vals[::-1], lower_z_vals, upper_z_vals[::-1]])
+    y_poly = np.full_like(x_poly, y_plane)
+    verts = np.column_stack((x_poly, y_poly, z_poly))
+    poly = ax.plot_trisurf(
+        verts[:, 0],
+        verts[:, 1],
+        verts[:, 2],
+        triangles=np.array([[0, i, i + 1] for i in range(1, len(verts) - 1)], dtype=int),
+        color=color,
+        alpha=alpha,
+        linewidth=0,
+        edgecolor="none",
+        antialiased=True,
+        shade=False,
+    )
+    try:
+        poly.set_edgecolor((0, 0, 0, 0))
+        poly.set_zsort("min")
+    except Exception:
+        pass
+    if label:
+        ax.plot([], [], [], color=color, alpha=alpha, label=label)
+
+
+def _mode0_void_polygon(profile):
+    if "mode0_void_outline_r" not in profile or "mode0_void_outline_z" not in profile:
+        return None
+
+    outline_r = np.asarray(profile["mode0_void_outline_r"], dtype=float)
+    outline_z = np.asarray(profile["mode0_void_outline_z"], dtype=float)
+    if outline_r.size < 2 or outline_z.size != outline_r.size:
+        return None
+
+    floor_z = float(profile.get("mode0_void_floor_z", np.min(outline_z)))
+    polygon_r = np.concatenate([outline_r, [outline_r[-1], 0.0]])
+    polygon_z = np.concatenate([outline_z, [floor_z, floor_z]])
+    return polygon_r, polygon_z, floor_z
+
+
+def _plot_mode0_void_wall(ax, profile, color, alpha, label=None, y_plane=0.0):
+    polygon = _mode0_void_polygon(profile)
+    if polygon is None:
+        return
+
+    polygon_r, polygon_z, _floor_z = polygon
+    x_poly = np.concatenate([polygon_r, -polygon_r[::-1]])
+    z_poly = np.concatenate([polygon_z, polygon_z[::-1]])
+    y_poly = np.full_like(x_poly, y_plane)
+    verts = np.column_stack((x_poly, y_poly, z_poly))
+    poly = ax.plot_trisurf(
+        verts[:, 0],
+        verts[:, 1],
+        verts[:, 2],
+        triangles=np.array([[0, i, i + 1] for i in range(1, len(verts) - 1)], dtype=int),
+        color=color,
+        alpha=alpha,
+        linewidth=0,
+        edgecolor="none",
+        antialiased=True,
+        shade=False,
+    )
+    try:
+        poly.set_edgecolor((0, 0, 0, 0))
+        poly.set_zsort("min")
+    except Exception:
+        pass
+    if label:
+        ax.plot([], [], [], color=color, alpha=alpha, label=label)
+
+
 def draw_mode_workspace(ax, profile, mode, style="real_3d"):
+    display_color = _display_color_for_mode(mode)
+    display_label = _display_label_for_mode(mode)
+    if mode == 0 and "mode0_void_r" in profile:
+        outer_z_plot, outer_r_plot, _, _ = _build_plot_curves(profile, mode)
+        void_r = np.asarray(profile["mode0_void_r"], dtype=float)
+        void_upper_z = np.asarray(profile["mode0_void_upper_z"], dtype=float)
+        void_floor_z = float(profile["mode0_void_floor_z"])
+        void_outline_r = np.asarray(profile.get("mode0_void_outline_r", void_r), dtype=float)
+        void_outline_z = np.asarray(profile.get("mode0_void_outline_z", void_upper_z), dtype=float)
+        void_lower_z = np.full_like(void_r, void_floor_z)
+
+        if style == "pseudo_3d":
+            _plot_profile_wall(
+                ax,
+                outer_z_plot,
+                outer_r_plot,
+                color=display_color,
+                alpha=0.78,
+                label=display_label,
+                y_plane=0.0,
+            )
+            if SHOW_UNREACHABLE and void_r.size >= 4:
+                if "mode0_void_outline_r" in profile:
+                    _plot_mode0_void_wall(
+                        ax,
+                        profile,
+                        color=UNREACHABLE_COLOR,
+                        alpha=0.82,
+                        label=None,
+                        y_plane=0.0,
+                    )
+                else:
+                    _plot_symmetric_band_wall(
+                        ax,
+                        void_r,
+                        void_lower_z,
+                        void_upper_z,
+                        color=UNREACHABLE_COLOR,
+                        alpha=0.82,
+                        label=None,
+                        y_plane=0.0,
+                    )
+            return
+
+        plot_revolved_profile(
+            ax,
+            outer_z_plot,
+            outer_r_plot,
+            color=display_color,
+            alpha=REACH_ALPHA,
+            label=display_label,
+            cap_ends=False,
+        )
+        if SHOW_UNREACHABLE and void_r.size >= 4:
+            plot_revolved_profile(
+                ax,
+                void_outline_z,
+                void_outline_r,
+                color=UNREACHABLE_COLOR,
+                alpha=UNREACHABLE_ALPHA,
+                label=None,
+                cap_ends=False,
+            )
+        return
+
     if mode == 1 and "mode1_r" in profile:
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
 
@@ -1152,7 +1606,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                 verts[:, 1],
                 verts[:, 2],
                 triangles=np.array([[0, i, i + 1] for i in range(1, len(verts) - 1)], dtype=int),
-                color=MODE_COLORS[mode],
+                color=display_color,
                 alpha=0.78,
                 linewidth=0,
                 edgecolor="none",
@@ -1164,23 +1618,23 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                 poly.set_zsort("min")
             except Exception:
                 pass
-            ax.plot([], [], [], color=MODE_COLORS[mode], alpha=0.78, label=MODE_LABELS[mode])
+            ax.plot([], [], [], color=display_color, alpha=0.78, label=display_label)
             return
 
         plot_revolved_profile(
             ax,
             upper_z,
             upper_r,
-            color=MODE_COLORS[mode],
+            color=display_color,
             alpha=REACH_ALPHA,
-            label=MODE_LABELS[mode],
+            label=display_label,
             cap_ends=False,
         )
         plot_revolved_profile(
             ax,
             lower_z,
             lower_r,
-            color=MODE_COLORS[mode],
+            color=display_color,
             alpha=REACH_ALPHA,
             label=None,
             cap_ends=False,
@@ -1194,9 +1648,9 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
             ax,
             outer_z_plot,
             outer_r_plot,
-            color=MODE_COLORS[mode],
+            color=display_color,
             alpha=0.78,
-            label=MODE_LABELS[mode],
+            label=display_label,
             y_plane=0.0,
         )
         if SHOW_UNREACHABLE:
@@ -1216,9 +1670,9 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
         ax,
         outer_z_plot,
         outer_r_plot,
-        color=MODE_COLORS[mode],
+        color=display_color,
         alpha=REACH_ALPHA,
-        label=MODE_LABELS[mode],
+        label=display_label,
         cap_ends=False,
     )
 
@@ -1236,18 +1690,61 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
 
 
 def draw_mode_side_view(ax, profile, mode):
+    display_color = _display_color_for_mode(mode)
+    if mode == 0 and "mode0_void_r" in profile:
+        z, outer_r, _, _ = _build_plot_curves(profile, mode)
+        void_r = np.asarray(profile["mode0_void_r"], dtype=float)
+        void_upper_z = np.asarray(profile["mode0_void_upper_z"], dtype=float)
+        void_polygon = _mode0_void_polygon(profile)
+        void_floor_z = float(profile["mode0_void_floor_z"])
+
+        ax.fill_betweenx(z, -outer_r, outer_r, color=display_color, alpha=0.65, linewidth=0)
+        if SHOW_UNREACHABLE and void_r.size >= 4:
+            if void_polygon is not None:
+                polygon_r, polygon_z, _ = void_polygon
+                ax.fill(polygon_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                ax.fill(-polygon_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+            else:
+                ax.fill_between(void_r, void_floor_z, void_upper_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                ax.fill_between(-void_r, void_floor_z, void_upper_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+
+        ax.plot(outer_r, z, color=display_color, linewidth=1.0, alpha=0.9)
+        ax.plot(-outer_r, z, color=display_color, linewidth=1.0, alpha=0.9)
+        if SHOW_UNREACHABLE and void_r.size >= 4:
+            if "mode0_void_outline_r" in profile:
+                void_outline_r = np.asarray(profile["mode0_void_outline_r"], dtype=float)
+                void_outline_z = np.asarray(profile["mode0_void_outline_z"], dtype=float)
+                ax.plot(void_outline_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+                ax.plot(-void_outline_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+            else:
+                ax.plot(void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+                ax.plot(-void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.35)
+        if DISPLAY_IN_MM:
+            mm_formatter = FuncFormatter(lambda value, _pos: f"{value * 1000:.0f}")
+            ax.xaxis.set_major_formatter(mm_formatter)
+            ax.yaxis.set_major_formatter(mm_formatter)
+            ax.set_xlabel("Y (mm)")
+            ax.set_ylabel("Z (mm)")
+        else:
+            ax.set_xlabel("Y")
+            ax.set_ylabel("Z")
+        return
+
     if mode == 1 and "mode1_r" in profile:
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
         pos_x = np.concatenate([upper_r, lower_r[::-1]])
         pos_y = np.concatenate([upper_z, lower_z[::-1]])
         neg_x = -pos_x
 
-        ax.fill(pos_x, pos_y, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
-        ax.fill(neg_x, pos_y, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
-        ax.plot(upper_r, upper_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
-        ax.plot(-upper_r, upper_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
-        ax.plot(lower_r, lower_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
-        ax.plot(-lower_r, lower_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+        ax.fill(pos_x, pos_y, color=display_color, alpha=0.65, linewidth=0)
+        ax.fill(neg_x, pos_y, color=display_color, alpha=0.65, linewidth=0)
+        ax.plot(upper_r, upper_z, color=display_color, linewidth=1.0, alpha=0.9)
+        ax.plot(-upper_r, upper_z, color=display_color, linewidth=1.0, alpha=0.9)
+        ax.plot(lower_r, lower_z, color=display_color, linewidth=1.0, alpha=0.9)
+        ax.plot(-lower_r, lower_z, color=display_color, linewidth=1.0, alpha=0.9)
 
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, alpha=0.35)
@@ -1264,7 +1761,7 @@ def draw_mode_side_view(ax, profile, mode):
 
     z, outer_r, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
 
-    ax.fill_betweenx(z, -outer_r, outer_r, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
+    ax.fill_betweenx(z, -outer_r, outer_r, color=display_color, alpha=0.65, linewidth=0)
 
     if SHOW_UNREACHABLE and inner_z_plot is not None and inner_z_plot.size >= 4:
         ax.fill_betweenx(
@@ -1276,8 +1773,8 @@ def draw_mode_side_view(ax, profile, mode):
             linewidth=0,
         )
 
-    ax.plot(outer_r, z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
-    ax.plot(-outer_r, z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+    ax.plot(outer_r, z, color=display_color, linewidth=1.0, alpha=0.9)
+    ax.plot(-outer_r, z, color=display_color, linewidth=1.0, alpha=0.9)
     if inner_z_plot is not None and inner_z_plot.size >= 4:
         ax.plot(inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
         ax.plot(-inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
@@ -1301,8 +1798,8 @@ def draw_mode_side_scatter(ax, side_points, mode):
 
     r = np.asarray(side_points[:, 0], dtype=float)
     z = np.asarray(side_points[:, 1], dtype=float)
-    ax.scatter(r, z, s=2.5, color=MODE_COLORS[mode], alpha=0.14, edgecolors="none")
-    ax.scatter(-r, z, s=2.5, color=MODE_COLORS[mode], alpha=0.14, edgecolors="none")
+    ax.scatter(r, z, s=2.5, color=_display_color_for_mode(mode), alpha=0.14, edgecolors="none")
+    ax.scatter(-r, z, s=2.5, color=_display_color_for_mode(mode), alpha=0.14, edgecolors="none")
 
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.35)
@@ -1318,18 +1815,36 @@ def draw_mode_side_scatter(ax, side_points, mode):
 
 
 def overlay_profile_curves(ax, profile, mode):
+    display_color = _display_color_for_mode(mode)
+    if mode == 0 and "mode0_void_r" in profile:
+        z, outer_r, _, _ = _build_plot_curves(profile, mode)
+        void_r = np.asarray(profile["mode0_void_r"], dtype=float)
+        void_upper_z = np.asarray(profile["mode0_void_upper_z"], dtype=float)
+        ax.plot(outer_r, z, color=display_color, linewidth=2.0, alpha=0.95)
+        ax.plot(-outer_r, z, color=display_color, linewidth=2.0, alpha=0.95)
+        if void_r.size >= 4:
+            if "mode0_void_outline_r" in profile:
+                void_outline_r = np.asarray(profile["mode0_void_outline_r"], dtype=float)
+                void_outline_z = np.asarray(profile["mode0_void_outline_z"], dtype=float)
+                ax.plot(void_outline_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+                ax.plot(-void_outline_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+            else:
+                ax.plot(void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+                ax.plot(-void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+        return
+
     if mode == 1 and "mode1_r" in profile:
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
-        ax.plot(upper_r, upper_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
-        ax.plot(-upper_r, upper_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
-        ax.plot(lower_r, lower_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
-        ax.plot(-lower_r, lower_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        ax.plot(upper_r, upper_z, color=display_color, linewidth=2.0, alpha=0.95)
+        ax.plot(-upper_r, upper_z, color=display_color, linewidth=2.0, alpha=0.95)
+        ax.plot(lower_r, lower_z, color=display_color, linewidth=2.0, alpha=0.95)
+        ax.plot(-lower_r, lower_z, color=display_color, linewidth=2.0, alpha=0.95)
         return
 
     z, outer_r, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
 
-    ax.plot(outer_r, z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
-    ax.plot(-outer_r, z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+    ax.plot(outer_r, z, color=display_color, linewidth=2.0, alpha=0.95)
+    ax.plot(-outer_r, z, color=display_color, linewidth=2.0, alpha=0.95)
 
     if inner_z_plot is not None and inner_z_plot.size >= 4:
         ax.plot(inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
@@ -1419,18 +1934,49 @@ def configure_side_view_axes(ax, all_profiles):
     ax.set_ylim(z_min - pad_z, z_max + pad_z)
 
 
+def _load_or_sample_mode_points(csm, mode):
+    side_points = _load_profile_cache(mode)
+    if side_points is not None:
+        print(f"Mode {mode}: loaded cached sampled points")
+        return side_points
+
+    side_points = sample_mode_side_points(csm, mode, MODE_SAMPLE_RES[mode])
+    _save_profile_cache(mode, side_points)
+    return side_points
+
+
 def generate_profiles():
     csm = CSM.from_config(CONFIG_PATH)
     profiles = {}
     sampled_points = {}
     for mode in PLOT_MODES:
-        side_points = _load_profile_cache(mode)
-        if side_points is not None:
-            print(f"Mode {mode}: loaded cached sampled points")
-        else:
-            side_points = sample_mode_side_points(csm, mode, MODE_SAMPLE_RES[mode])
-            _save_profile_cache(mode, side_points)
+        if mode == 0:
+            combined_points = []
+            source_profiles = {}
+            for source_mode in COMBINED_SOURCE_MODES:
+                side_points = _load_or_sample_mode_points(csm, source_mode)
+                sampled_points[source_mode] = side_points
+                if side_points is not None and side_points.size > 0:
+                    combined_points.append(np.asarray(side_points, dtype=float))
+                    source_profile = build_profile_from_side_points(side_points, mode=source_mode)
+                    if source_profile is not None:
+                        source_profiles[source_mode] = source_profile
 
+            if not combined_points:
+                print("Mode 0: failed to gather source side points")
+                continue
+
+            merged_points = np.vstack(combined_points)
+            merged_points = np.unique(np.round(merged_points, decimals=9), axis=0)
+            sampled_points[0] = merged_points
+            profile = _build_mode0_profile_from_sources(merged_points, source_profiles)
+            if profile is None:
+                print("Mode 0: failed to build combined profile")
+                continue
+            profiles[0] = profile
+            continue
+
+        side_points = _load_or_sample_mode_points(csm, mode)
         sampled_points[mode] = side_points
         profile = build_profile_from_side_points(side_points, mode=mode)
         if profile is None:
@@ -1447,15 +1993,17 @@ def main():
 
     if SEPARATE_PLOTS:
         fig = plt.figure(figsize=FIGSIZE)
-        axes = [fig.add_subplot(2, 2, i + 1, projection="3d") for i in range(4)]
+        axes = [fig.add_subplot(2, 2, i + 1, projection="3d") for i in range(max(4, len(PLOT_MODES)))]
         all_profiles = list(profiles.values())
-        for mode, ax in zip((1, 2, 3, 4), axes):
+        for mode, ax in zip(PLOT_MODES, axes):
             if mode not in profiles:
                 ax.set_axis_off()
                 continue
             draw_mode_workspace(ax, profiles[mode], mode, style=MAIN_VIEW_STYLE)
-            ax.set_title(MODE_LABELS[mode])
+            ax.set_title(_display_label_for_mode(mode))
             configure_axes(ax, all_profiles, style=MAIN_VIEW_STYLE, role="main")
+        for ax in axes[len(PLOT_MODES):]:
+            ax.set_axis_off()
         plt.tight_layout()
     else:
         if SHOW_SIDE_VIEW or SHOW_SAMPLE_SCATTER:
@@ -1472,6 +2020,14 @@ def main():
             side_ax = None
             scatter_ax = None
         all_profiles = list(profiles.values())
+        scatter_modes = []
+        for mode in PLOT_MODES:
+            if mode == 0:
+                scatter_modes.extend([source_mode for source_mode in COMBINED_SOURCE_MODES if source_mode in sampled_points])
+            elif mode in sampled_points:
+                scatter_modes.append(mode)
+        scatter_modes = list(dict.fromkeys(scatter_modes))
+
         for mode in PLOT_MODES:
             if mode not in profiles:
                 continue
@@ -1481,9 +2037,12 @@ def main():
                     draw_mode_side_view(side_ax, profiles[mode], mode)
                 else:
                     draw_mode_workspace(side_ax, profiles[mode], mode, style=SIDE_VIEW_STYLE)
-            if scatter_ax is not None and mode in sampled_points:
-                draw_mode_side_scatter(scatter_ax, sampled_points[mode], mode)
-                overlay_profile_curves(scatter_ax, profiles[mode], mode)
+        if scatter_ax is not None:
+            for scatter_mode in scatter_modes:
+                draw_mode_side_scatter(scatter_ax, sampled_points[scatter_mode], scatter_mode)
+            for mode in PLOT_MODES:
+                if mode in profiles:
+                    overlay_profile_curves(scatter_ax, profiles[mode], mode)
         configure_axes(ax, all_profiles, style=MAIN_VIEW_STYLE, role="main")
         if side_ax is not None:
             if SIDE_VIEW_STYLE == "pseudo_3d":
