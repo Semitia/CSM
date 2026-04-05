@@ -19,7 +19,7 @@ from csm.model import CSM
 CONFIG_NAME = "csm_cfg_0.yaml"
 CONFIG_PATH = Path("./config") / CONFIG_NAME
 # PLOT_MODES = [1, 2, 3, 4]
-PLOT_MODES = [1]
+PLOT_MODES = [2]
 CACHE_DIR = Path("./data/profile_cache")
 USE_CACHE = True
 FORCE_REBUILD_CACHE = False
@@ -44,6 +44,11 @@ PROFILE_MIN_VOID_RATIO = 0.15
 PROFILE_MIN_INNER_RUN = 8
 PROFILE_CURVE_SMOOTH_SIGMA = 2.2
 PROFILE_INNER_APEX_MAX_EXTEND_BINS = 12
+PROFILE_ENDPOINT_FIT_SAMPLES = 7
+PROFILE_ENDPOINT_ARC_SAMPLES = 48
+PROFILE_ENDPOINT_LINE_RADIUS_RATIO = 24.0
+PROFILE_ENDPOINT_MAX_TURN = 0.5 * np.pi
+PROFILE_ENDPOINT_FIT_WINDOWS = (5, 7, 9, 11, 15, 21, 31)
 # ===== Surface rendering =====
 REVOLVE_SAMPLES = 40
 CAP_RADIAL_SAMPLES = 18
@@ -386,6 +391,385 @@ def _smooth_scalar_curve(x_vals, y_vals, upsample_factor=4, sigma=1.2):
     return x_dense, y_dense
 
 
+def _normalize_vector(vec):
+    vec = np.asarray(vec, dtype=float)
+    norm = float(np.hypot(vec[0], vec[1]))
+    if norm <= 1e-12 or not np.isfinite(norm):
+        return None
+    return vec / norm
+
+
+def _fit_circle_to_points(x_vals, y_vals):
+    x_vals = np.asarray(x_vals, dtype=float)
+    y_vals = np.asarray(y_vals, dtype=float)
+    if x_vals.size < 3:
+        return None
+
+    a_mat = np.column_stack((2.0 * x_vals, 2.0 * y_vals, np.ones_like(x_vals)))
+    b_vec = x_vals * x_vals + y_vals * y_vals
+    try:
+        cx, cy, c_term = np.linalg.lstsq(a_mat, b_vec, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        return None
+
+    radius_sq = cx * cx + cy * cy + c_term
+    if not np.isfinite(radius_sq) or radius_sq <= 1e-12:
+        return None
+
+    radius = float(np.sqrt(radius_sq))
+    residual = np.hypot(x_vals - cx, y_vals - cy) - radius
+    rms = float(np.sqrt(np.mean(residual * residual)))
+    return {
+        "center": np.array([float(cx), float(cy)], dtype=float),
+        "radius": radius,
+        "rms": rms,
+    }
+
+
+def _build_endpoint_helper(x_vals, y_vals, at_end=False, fit_samples=PROFILE_ENDPOINT_FIT_SAMPLES):
+    x_vals = np.asarray(x_vals, dtype=float)
+    y_vals = np.asarray(y_vals, dtype=float)
+    if x_vals.size < 2:
+        return None
+
+    sample_count = min(int(fit_samples), x_vals.size)
+    if at_end:
+        x_local = x_vals[-sample_count:][::-1]
+        y_local = y_vals[-sample_count:][::-1]
+        endpoint = np.array([x_vals[-1], y_vals[-1]], dtype=float)
+    else:
+        x_local = x_vals[:sample_count]
+        y_local = y_vals[:sample_count]
+        endpoint = np.array([x_vals[0], y_vals[0]], dtype=float)
+
+    tangent_in = _normalize_vector(np.array([x_local[1] - x_local[0], y_local[1] - y_local[0]], dtype=float))
+    if tangent_in is None:
+        return None
+    tangent_out = -tangent_in
+
+    helper = {
+        "kind": "line",
+        "point": endpoint,
+        "dir_out": tangent_out,
+        "dir_in": tangent_in,
+    }
+
+    circle_fit = _fit_circle_to_points(x_local, y_local)
+    if circle_fit is None:
+        return helper
+
+    chord = float(np.hypot(x_local[-1] - x_local[0], y_local[-1] - y_local[0]))
+    if chord <= 1e-9:
+        return helper
+
+    radius = circle_fit["radius"]
+    if (
+        not np.isfinite(radius)
+        or radius <= 0.0
+        or radius > PROFILE_ENDPOINT_LINE_RADIUS_RATIO * chord
+        or circle_fit["rms"] > 0.08 * chord
+    ):
+        return helper
+
+    center = circle_fit["center"]
+    angles = np.unwrap(np.arctan2(y_local - center[1], x_local - center[0]))
+    angle_diffs = np.diff(angles)
+    if not np.all(np.isfinite(angle_diffs)) or np.max(np.abs(angle_diffs)) <= 1e-6:
+        return helper
+
+    a0 = float(angles[0])
+    tangent_ccw = _normalize_vector(np.array([-np.sin(a0), np.cos(a0)], dtype=float))
+    if tangent_ccw is None:
+        return helper
+
+    turn_in_sign = 1.0 if float(np.dot(tangent_ccw, tangent_in)) >= 0.0 else -1.0
+    turn_out_sign = -turn_in_sign
+    return {
+        "kind": "circle",
+        "point": endpoint,
+        "center": center,
+        "radius": radius,
+        "angle0": a0,
+        "turn_out_sign": turn_out_sign,
+    }
+
+
+def _cross_2d(a_vec, b_vec):
+    return float(a_vec[0] * b_vec[1] - a_vec[1] * b_vec[0])
+
+
+def _trim_endpoint_flat_run(x_vals, y_vals, axis="x", at_end=False, tol=1e-8, min_run_points=4):
+    x_vals = np.asarray(x_vals, dtype=float)
+    y_vals = np.asarray(y_vals, dtype=float)
+    if x_vals.size < min_run_points + 2:
+        return x_vals, y_vals, False
+
+    coord = x_vals if axis == "x" else y_vals
+    if at_end:
+        start = x_vals.size - 1
+        while start - 1 >= 0 and abs(coord[start] - coord[start - 1]) <= tol:
+            start -= 1
+        trimmed_points = x_vals.size - start - 1
+        if trimmed_points < min_run_points:
+            return x_vals, y_vals, False
+        return x_vals[:start + 1], y_vals[:start + 1], True
+
+    end = 0
+    while end + 1 < x_vals.size and abs(coord[end + 1] - coord[end]) <= tol:
+        end += 1
+    trimmed_points = end
+    if trimmed_points < min_run_points:
+        return x_vals, y_vals, False
+    return x_vals[end:], y_vals[end:], True
+
+
+def _helper_progress(helper, point):
+    point = np.asarray(point, dtype=float)
+    tol = 1e-7
+
+    if helper["kind"] == "line":
+        delta = point - helper["point"]
+        length = float(np.dot(delta, helper["dir_out"]))
+        distance = abs(_cross_2d(delta, helper["dir_out"]))
+        if length < -tol or distance > 1e-5:
+            return None
+        return max(length, 0.0)
+
+    delta = point - helper["center"]
+    distance = float(np.hypot(delta[0], delta[1]))
+    if not np.isfinite(distance) or abs(distance - helper["radius"]) > 1e-5:
+        return None
+
+    angle = float(np.arctan2(delta[1], delta[0]))
+    signed_delta = float(np.arctan2(np.sin(angle - helper["angle0"]), np.cos(angle - helper["angle0"])))
+    turn = helper["turn_out_sign"] * signed_delta
+    if turn < -tol or turn > PROFILE_ENDPOINT_MAX_TURN + tol:
+        return None
+    return max(turn, 0.0) * helper["radius"]
+
+
+def _line_line_intersections(helper_a, helper_b):
+    dir_a = helper_a["dir_out"]
+    dir_b = helper_b["dir_out"]
+    denom = _cross_2d(dir_a, dir_b)
+    if abs(denom) <= 1e-10:
+        return []
+
+    delta = helper_b["point"] - helper_a["point"]
+    length_a = _cross_2d(delta, dir_b) / denom
+    length_b = _cross_2d(delta, dir_a) / denom
+    if length_a < -1e-9 or length_b < -1e-9:
+        return []
+    return [helper_a["point"] + length_a * dir_a]
+
+
+def _line_circle_intersections(line_helper, circle_helper):
+    origin = line_helper["point"]
+    direction = line_helper["dir_out"]
+    offset = origin - circle_helper["center"]
+
+    b_term = 2.0 * float(np.dot(direction, offset))
+    c_term = float(np.dot(offset, offset) - circle_helper["radius"] * circle_helper["radius"])
+    disc = b_term * b_term - 4.0 * c_term
+    if disc < -1e-10:
+        return []
+    disc = max(disc, 0.0)
+    sqrt_disc = float(np.sqrt(disc))
+    roots = [(-b_term - sqrt_disc) / 2.0, (-b_term + sqrt_disc) / 2.0]
+
+    points = []
+    for root in roots:
+        if root < -1e-9:
+            continue
+        points.append(origin + max(root, 0.0) * direction)
+    return points
+
+
+def _circle_circle_intersections(helper_a, helper_b):
+    center_delta = helper_b["center"] - helper_a["center"]
+    center_dist = float(np.hypot(center_delta[0], center_delta[1]))
+    r0 = helper_a["radius"]
+    r1 = helper_b["radius"]
+    if (
+        center_dist <= 1e-10
+        or center_dist > r0 + r1 + 1e-9
+        or center_dist < abs(r0 - r1) - 1e-9
+    ):
+        return []
+
+    a_term = (r0 * r0 - r1 * r1 + center_dist * center_dist) / (2.0 * center_dist)
+    h_sq = r0 * r0 - a_term * a_term
+    if h_sq < -1e-10:
+        return []
+    h_sq = max(h_sq, 0.0)
+    h_term = float(np.sqrt(h_sq))
+
+    base = helper_a["center"] + (a_term / center_dist) * center_delta
+    normal = np.array([-center_delta[1], center_delta[0]], dtype=float) / center_dist
+    if h_term <= 1e-10:
+        return [base]
+    return [base + h_term * normal, base - h_term * normal]
+
+
+def _find_shared_endpoint_target(helper_a, helper_b):
+    if helper_a is None or helper_b is None:
+        return None
+
+    if helper_a["kind"] == "line" and helper_b["kind"] == "line":
+        candidates = _line_line_intersections(helper_a, helper_b)
+    elif helper_a["kind"] == "line" and helper_b["kind"] == "circle":
+        candidates = _line_circle_intersections(helper_a, helper_b)
+    elif helper_a["kind"] == "circle" and helper_b["kind"] == "line":
+        candidates = _line_circle_intersections(helper_b, helper_a)
+    else:
+        candidates = _circle_circle_intersections(helper_a, helper_b)
+
+    best_point = None
+    best_cost = np.inf
+    for candidate in candidates:
+        prog_a = _helper_progress(helper_a, candidate)
+        prog_b = _helper_progress(helper_b, candidate)
+        if prog_a is None or prog_b is None:
+            continue
+        total_cost = float(prog_a + prog_b)
+        if total_cost < best_cost:
+            best_cost = total_cost
+            best_point = np.asarray(candidate, dtype=float)
+    return best_point
+
+
+def _extend_curve_with_helper(x_vals, y_vals, helper, target_point, at_end=False, arc_samples=PROFILE_ENDPOINT_ARC_SAMPLES):
+    x_vals = np.asarray(x_vals, dtype=float)
+    y_vals = np.asarray(y_vals, dtype=float)
+    target_point = np.asarray(target_point, dtype=float)
+    if helper is None or target_point.size != 2:
+        return x_vals, y_vals
+
+    if helper["kind"] == "line":
+        if at_end:
+            return (
+                np.concatenate([x_vals, [target_point[0]]]),
+                np.concatenate([y_vals, [target_point[1]]]),
+            )
+        return (
+            np.concatenate([[target_point[0]], x_vals]),
+            np.concatenate([[target_point[1]], y_vals]),
+        )
+
+    target_delta = target_point - helper["center"]
+    target_angle = float(np.arctan2(target_delta[1], target_delta[0]))
+    signed_delta = float(
+        np.arctan2(np.sin(target_angle - helper["angle0"]), np.cos(target_angle - helper["angle0"]))
+    )
+    turn = helper["turn_out_sign"] * signed_delta
+    if turn <= 1e-9:
+        return x_vals, y_vals
+
+    sample_count = max(10, int(np.ceil(arc_samples * turn / max(0.25 * np.pi, turn))) + 1)
+    if at_end:
+        arc_angles = np.linspace(helper["angle0"], target_angle, sample_count)
+        arc_x = helper["center"][0] + helper["radius"] * np.cos(arc_angles)
+        arc_y = helper["center"][1] + helper["radius"] * np.sin(arc_angles)
+        return (
+            np.concatenate([x_vals, arc_x[1:]]),
+            np.concatenate([y_vals, arc_y[1:]]),
+        )
+
+    arc_angles = np.linspace(target_angle, helper["angle0"], sample_count)
+    arc_x = helper["center"][0] + helper["radius"] * np.cos(arc_angles)
+    arc_y = helper["center"][1] + helper["radius"] * np.sin(arc_angles)
+    return (
+        np.concatenate([arc_x[:-1], x_vals]),
+        np.concatenate([arc_y[:-1], y_vals]),
+    )
+
+
+def _build_endpoint_variants(x_vals, y_vals, at_end=False):
+    x_vals = np.asarray(x_vals, dtype=float)
+    y_vals = np.asarray(y_vals, dtype=float)
+    if x_vals.size < 2:
+        return []
+
+    curve_variants = [(x_vals, y_vals)]
+    for axis in ("x", "y"):
+        trimmed_x, trimmed_y, changed = _trim_endpoint_flat_run(x_vals, y_vals, axis=axis, at_end=at_end)
+        if changed and trimmed_x.size >= 2:
+            curve_variants.append((trimmed_x, trimmed_y))
+
+    helper_variants = []
+    seen_keys = set()
+    for curve_x, curve_y in curve_variants:
+        for fit_samples in PROFILE_ENDPOINT_FIT_WINDOWS:
+            if curve_x.size < 2:
+                continue
+            helper = _build_endpoint_helper(curve_x, curve_y, at_end=at_end, fit_samples=min(fit_samples, curve_x.size))
+            if helper is None:
+                continue
+
+            if helper["kind"] == "line":
+                rounded = tuple(np.round(np.concatenate([helper["point"], helper["dir_out"]]), decimals=7))
+                key = ("line", curve_x.size, rounded)
+            else:
+                rounded = tuple(
+                    np.round(
+                        np.concatenate([helper["point"], helper["center"], [helper["radius"], helper["turn_out_sign"]]]),
+                        decimals=7,
+                    )
+                )
+                key = ("circle", curve_x.size, rounded)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            helper_variants.append(
+                {
+                    "x_vals": curve_x,
+                    "y_vals": curve_y,
+                    "helper": helper,
+                }
+            )
+    return helper_variants
+
+
+def _connect_curve_endpoints(x_a, y_a, x_b, y_b, at_end_a=False, at_end_b=False):
+    variants_a = _build_endpoint_variants(x_a, y_a, at_end=at_end_a)
+    variants_b = _build_endpoint_variants(x_b, y_b, at_end=at_end_b)
+    best_result = None
+    best_cost = np.inf
+
+    for variant_a in variants_a:
+        for variant_b in variants_b:
+            target_point = _find_shared_endpoint_target(variant_a["helper"], variant_b["helper"])
+            if target_point is None or not np.all(np.isfinite(target_point)):
+                continue
+            prog_a = _helper_progress(variant_a["helper"], target_point)
+            prog_b = _helper_progress(variant_b["helper"], target_point)
+            if prog_a is None or prog_b is None:
+                continue
+
+            total_cost = float(prog_a + prog_b)
+            if total_cost >= best_cost:
+                continue
+
+            x_a_ext, y_a_ext = _extend_curve_with_helper(
+                variant_a["x_vals"],
+                variant_a["y_vals"],
+                variant_a["helper"],
+                target_point,
+                at_end=at_end_a,
+            )
+            x_b_ext, y_b_ext = _extend_curve_with_helper(
+                variant_b["x_vals"],
+                variant_b["y_vals"],
+                variant_b["helper"],
+                target_point,
+                at_end=at_end_b,
+            )
+            best_cost = total_cost
+            best_result = (x_a_ext, y_a_ext, x_b_ext, y_b_ext)
+
+    return best_result
+
+
 def _build_mode1_profile_from_side_points(side_points):
     if side_points.shape[0] < 8:
         return None
@@ -477,90 +861,28 @@ def _build_mode1_profile_from_side_points(side_points):
     }
 
 
-def _side_tip_radius_for_endpoint(r0, z0, slope, z_tip):
-    dz = z0 - z_tip
-    if dz <= 0 or slope is None or slope >= -1e-9:
-        return None
-    return float(r0 + dz / slope + dz * np.sqrt(1.0 + 1.0 / (slope * slope)))
+def _build_mode1_plot_curves(profile):
+    upper_r = np.asarray(profile["mode1_r"], dtype=float)
+    lower_r = np.asarray(profile["mode1_r"], dtype=float)
+    upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
+    lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
 
-
-def _solve_shared_side_tip(outer_z, outer_r, inner_z, inner_r, max_extend_bins=12):
-    if outer_z.size < 3 or inner_z.size < 3:
-        return None
-
-    slope_outer = _estimate_dr_dz(outer_z, outer_r, at_end=False)
-    slope_inner = _estimate_dr_dz(inner_z, inner_r, at_end=False)
-    if slope_outer is None or slope_inner is None:
-        return None
-    if slope_outer >= -1e-9 or slope_inner >= -1e-9:
-        return None
-
-    z_outer_0 = float(outer_z[0])
-    z_inner_0 = float(inner_z[0])
-    r_outer_0 = float(outer_r[0])
-    r_inner_0 = float(inner_r[0])
-    dz_outer = np.median(np.diff(outer_z)) if outer_z.size >= 2 else 0.0
-    dz_inner = np.median(np.diff(inner_z)) if inner_z.size >= 2 else 0.0
-    max_extend_dz = max_extend_bins * max(dz_outer, dz_inner)
-    if max_extend_dz <= 0:
-        return None
-
-    k_outer = 1.0 / slope_outer + np.sqrt(1.0 + 1.0 / (slope_outer * slope_outer))
-    k_inner = 1.0 / slope_inner + np.sqrt(1.0 + 1.0 / (slope_inner * slope_inner))
-    denom = k_inner - k_outer
-    if abs(denom) < 1e-12:
-        return None
-
-    z_tip = (r_outer_0 - r_inner_0 + k_outer * z_outer_0 - k_inner * z_inner_0) / denom
-    z_high = min(z_outer_0, z_inner_0) - 1e-9
-    z_low = z_high - max_extend_dz
-    if not np.isfinite(z_tip) or z_tip >= z_high or z_tip < z_low:
-        return None
-
-    r_tip = _side_tip_radius_for_endpoint(r_outer_0, z_outer_0, slope_outer, z_tip)
-    if r_tip is None or not np.isfinite(r_tip):
-        return None
-    return float(z_tip), float(r_tip)
-
-
-def _prepend_side_arc(z_vals, r_vals, z_tip, r_tip, arc_samples=24):
-    z_vals = np.asarray(z_vals, dtype=float)
-    r_vals = np.asarray(r_vals, dtype=float)
-    if z_vals.size < 3:
-        return z_vals, r_vals
-
-    slope = _estimate_dr_dz(z_vals, r_vals, at_end=False)
-    if slope is None or slope >= -1e-9:
-        return z_vals, r_vals
-
-    z_start = float(z_vals[0])
-    r_start = float(r_vals[0])
-    if z_tip >= z_start or r_tip <= r_start:
-        return z_vals, r_vals
-
-    center_r = r_start + (z_start - z_tip) / slope
-    radius = r_tip - center_r
-    if radius <= 0 or not np.isfinite(radius):
-        return z_vals, r_vals
-
-    theta_start = float(np.arctan2(z_start - z_tip, r_start - center_r))
-    theta_arc = np.linspace(0.0, theta_start, arc_samples)
-    arc_r = center_r + radius * np.cos(theta_arc)
-    arc_z = z_tip + radius * np.sin(theta_arc)
-    return (
-        np.concatenate([arc_z[:-1], z_vals]),
-        np.concatenate([arc_r[:-1], r_vals]),
+    connected = _connect_curve_endpoints(
+        upper_r,
+        upper_z,
+        lower_r,
+        lower_z,
+        at_end_a=True,
+        at_end_b=True,
     )
+    if connected is None:
+        return upper_r, upper_z, lower_r, lower_z
+    return connected
 
 
 def _build_plot_curves(profile, mode):
     if mode == 1 and "mode1_r" in profile:
-        return (
-            np.asarray(profile["mode1_r"], dtype=float),
-            np.asarray(profile["mode1_upper_z"], dtype=float),
-            np.asarray(profile["mode1_r"], dtype=float),
-            np.asarray(profile["mode1_lower_z"], dtype=float),
-        )
+        return _build_mode1_plot_curves(profile)
 
     z_outer = np.asarray(profile["z"], dtype=float)
     r_outer = np.asarray(profile["outer_r"], dtype=float)
@@ -590,17 +912,9 @@ def _build_plot_curves(profile, mode):
         max_extend_bins=PROFILE_INNER_APEX_MAX_EXTEND_BINS,
     )
 
-    side_tip = _solve_shared_side_tip(
-        np.asarray(profile["z"], dtype=float),
-        np.asarray(profile["outer_r"], dtype=float),
-        z_inner,
-        r_inner,
-        max_extend_bins=PROFILE_INNER_APEX_MAX_EXTEND_BINS,
-    )
-    if side_tip is not None:
-        z_tip, r_tip = side_tip
-        z_outer, r_outer = _prepend_side_arc(z_outer, r_outer, z_tip, r_tip)
-        z_inner, r_inner = _prepend_side_arc(z_inner, r_inner, z_tip, r_tip)
+    connected = _connect_curve_endpoints(r_outer, z_outer, r_inner, z_inner, at_end_a=False, at_end_b=False)
+    if connected is not None:
+        r_outer, z_outer, r_inner, z_inner = connected
 
     return z_outer, r_outer, z_inner, r_inner
 
@@ -826,12 +1140,10 @@ def _plot_profile_wall(ax, z_vals, r_vals, color, alpha, label=None, y_plane=0.0
 
 def draw_mode_workspace(ax, profile, mode, style="real_3d"):
     if mode == 1 and "mode1_r" in profile:
-        r_plot = np.asarray(profile["mode1_r"], dtype=float)
-        upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
-        lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
+        upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
 
         if style == "pseudo_3d":
-            x_poly = np.concatenate([r_plot, r_plot[::-1], -r_plot, -r_plot[::-1]])
+            x_poly = np.concatenate([upper_r, lower_r[::-1], -lower_r, -upper_r[::-1]])
             z_poly = np.concatenate([upper_z, lower_z[::-1], lower_z, upper_z[::-1]])
             y_poly = np.zeros_like(x_poly)
             verts = np.column_stack((x_poly, y_poly, z_poly))
@@ -858,7 +1170,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
         plot_revolved_profile(
             ax,
             upper_z,
-            r_plot,
+            upper_r,
             color=MODE_COLORS[mode],
             alpha=REACH_ALPHA,
             label=MODE_LABELS[mode],
@@ -867,7 +1179,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
         plot_revolved_profile(
             ax,
             lower_z,
-            r_plot,
+            lower_r,
             color=MODE_COLORS[mode],
             alpha=REACH_ALPHA,
             label=None,
@@ -925,16 +1237,17 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
 
 def draw_mode_side_view(ax, profile, mode):
     if mode == 1 and "mode1_r" in profile:
-        r_plot = np.asarray(profile["mode1_r"], dtype=float)
-        upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
-        lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
+        upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+        pos_x = np.concatenate([upper_r, lower_r[::-1]])
+        pos_y = np.concatenate([upper_z, lower_z[::-1]])
+        neg_x = -pos_x
 
-        ax.fill_between(r_plot, lower_z, upper_z, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
-        ax.fill_between(-r_plot, lower_z, upper_z, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
-        ax.plot(r_plot, upper_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
-        ax.plot(-r_plot, upper_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
-        ax.plot(r_plot, lower_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
-        ax.plot(-r_plot, lower_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+        ax.fill(pos_x, pos_y, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
+        ax.fill(neg_x, pos_y, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
+        ax.plot(upper_r, upper_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+        ax.plot(-upper_r, upper_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+        ax.plot(lower_r, lower_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+        ax.plot(-lower_r, lower_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
 
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, alpha=0.35)
@@ -1006,13 +1319,11 @@ def draw_mode_side_scatter(ax, side_points, mode):
 
 def overlay_profile_curves(ax, profile, mode):
     if mode == 1 and "mode1_r" in profile:
-        r_plot = np.asarray(profile["mode1_r"], dtype=float)
-        upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
-        lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
-        ax.plot(r_plot, upper_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
-        ax.plot(-r_plot, upper_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
-        ax.plot(r_plot, lower_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
-        ax.plot(-r_plot, lower_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+        ax.plot(upper_r, upper_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        ax.plot(-upper_r, upper_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        ax.plot(lower_r, lower_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        ax.plot(-lower_r, lower_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
         return
 
     z, outer_r, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
@@ -1032,9 +1343,15 @@ def configure_axes(ax, all_profiles, style="real_3d", role="main"):
     for profile in all_profiles:
         if len(profile["z"]) == 0:
             continue
-        outer_max = max(outer_max, float(np.max(profile["outer_r"])))
-        z_min = min(z_min, float(np.min(profile["z"])))
-        z_max = max(z_max, float(np.max(profile["z"])))
+        if "mode1_r" in profile:
+            upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+            outer_max = max(outer_max, float(np.max([np.max(upper_r), np.max(lower_r)])))
+            z_min = min(z_min, float(np.min([np.min(upper_z), np.min(lower_z)])))
+            z_max = max(z_max, float(np.max([np.max(upper_z), np.max(lower_z)])))
+        else:
+            outer_max = max(outer_max, float(np.max(profile["outer_r"])))
+            z_min = min(z_min, float(np.min(profile["z"])))
+            z_max = max(z_max, float(np.max(profile["z"])))
 
     if outer_max <= 0.0 or not np.isfinite(z_min) or not np.isfinite(z_max):
         return
@@ -1083,9 +1400,15 @@ def configure_side_view_axes(ax, all_profiles):
     for profile in all_profiles:
         if len(profile["z"]) == 0:
             continue
-        outer_max = max(outer_max, float(np.max(profile["outer_r"])))
-        z_min = min(z_min, float(np.min(profile["z"])))
-        z_max = max(z_max, float(np.max(profile["z"])))
+        if "mode1_r" in profile:
+            upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+            outer_max = max(outer_max, float(np.max([np.max(upper_r), np.max(lower_r)])))
+            z_min = min(z_min, float(np.min([np.min(upper_z), np.min(lower_z)])))
+            z_max = max(z_max, float(np.max([np.max(upper_z), np.max(lower_z)])))
+        else:
+            outer_max = max(outer_max, float(np.max(profile["outer_r"])))
+            z_min = min(z_min, float(np.min(profile["z"])))
+            z_max = max(z_max, float(np.max(profile["z"])))
 
     if outer_max <= 0.0 or not np.isfinite(z_min) or not np.isfinite(z_max):
         return
