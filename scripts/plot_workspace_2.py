@@ -28,8 +28,8 @@ FORCE_REBUILD_CACHE = False
 # We sample only the side-view generating variables.
 # phi / delta_1 / delta_2 are fixed to 0 and are reintroduced by revolving the profile.
 MODE_SAMPLE_RES = {
-    1: {"length": 120, "theta1": 1, "theta2": 120},
-    2: {"length": 110, "theta1": 1, "theta2": 120},
+    1: {"length": 220, "theta1": 1, "theta2": 240},
+    2: {"length": 180, "theta1": 1, "theta2": 220},
     3: {"length": 90, "theta1": 90, "theta2": 90},
     4: {"length": 90, "theta1": 90, "theta2": 90},
 }
@@ -372,6 +372,111 @@ def _smooth_curve_for_plot(z_vals, r_vals, upsample_factor=4, sigma=1.2):
     return z_dense, r_dense
 
 
+def _smooth_scalar_curve(x_vals, y_vals, upsample_factor=4, sigma=1.2):
+    x_vals = np.asarray(x_vals, dtype=float)
+    y_vals = np.asarray(y_vals, dtype=float)
+    if x_vals.size < 4:
+        return x_vals, y_vals
+
+    dense_count = max(int(x_vals.size * upsample_factor), x_vals.size)
+    x_dense = np.linspace(x_vals[0], x_vals[-1], dense_count)
+    y_dense = np.interp(x_dense, x_vals, y_vals)
+    if sigma > 0:
+        y_dense = gaussian_filter1d(y_dense, sigma=sigma, mode="nearest")
+    return x_dense, y_dense
+
+
+def _build_mode1_profile_from_side_points(side_points):
+    if side_points.shape[0] < 8:
+        return None
+
+    r = np.asarray(side_points[:, 0], dtype=float)
+    z = np.asarray(side_points[:, 1], dtype=float)
+    r_max = float(np.max(r))
+    if np.isclose(r_max, 0.0):
+        return None
+
+    r_edges = np.linspace(0.0, r_max, PROFILE_R_BINS + 1)
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+    r_bin_idx = np.clip(np.digitize(r, r_edges) - 1, 0, len(r_centers) - 1)
+
+    upper_z = np.full(r_centers.shape, np.nan, dtype=float)
+    lower_z = np.full(r_centers.shape, np.nan, dtype=float)
+    for i in range(len(r_centers)):
+        row_points = z[r_bin_idx == i]
+        if row_points.size > 0:
+            upper_z[i] = np.max(row_points)
+            lower_z[i] = np.min(row_points)
+
+    valid = np.isfinite(upper_z) & np.isfinite(lower_z)
+    if np.count_nonzero(valid) < 4:
+        return None
+
+    first = int(np.flatnonzero(valid)[0])
+    last = int(np.flatnonzero(valid)[-1])
+    r_valid = r_centers[first:last + 1]
+
+    upper_raw = np.interp(r_valid, r_centers[valid], upper_z[valid])
+    lower_raw = np.interp(r_valid, r_centers[valid], lower_z[valid])
+
+    if PROFILE_CURVE_SMOOTH_SIGMA > 0:
+        upper_smooth = gaussian_filter1d(upper_raw, sigma=PROFILE_CURVE_SMOOTH_SIGMA, mode="nearest")
+        lower_smooth = gaussian_filter1d(lower_raw, sigma=PROFILE_CURVE_SMOOTH_SIGMA, mode="nearest")
+    else:
+        upper_smooth = upper_raw.copy()
+        lower_smooth = lower_raw.copy()
+
+    # Keep the upper/lower envelopes conservative with respect to sampled points.
+    upper_smooth = np.maximum(upper_smooth, upper_raw)
+    lower_smooth = np.minimum(lower_smooth, lower_raw)
+
+    # Include the axis apex and the outermost sampled radius explicitly.
+    axis_mask = r <= r_edges[1]
+    axis_upper = float(np.max(z[axis_mask])) if np.any(axis_mask) else float(np.max(z))
+    axis_lower = float(np.min(z[axis_mask])) if np.any(axis_mask) else float(np.min(z))
+    outer_mask = r >= r_edges[-2]
+    outer_upper = float(np.max(z[outer_mask])) if np.any(outer_mask) else float(upper_smooth[-1])
+    outer_lower = float(np.min(z[outer_mask])) if np.any(outer_mask) else float(lower_smooth[-1])
+
+    r_plot = np.concatenate(([0.0], r_valid, [r_max]))
+    upper_plot = np.concatenate(([axis_upper], upper_smooth, [outer_upper]))
+    lower_plot = np.concatenate(([axis_lower], lower_smooth, [outer_lower]))
+
+    upper_raw_plot = np.concatenate(([axis_upper], upper_raw, [outer_upper]))
+    lower_raw_plot = np.concatenate(([axis_lower], lower_raw, [outer_lower]))
+    r_plot, upper_plot = _smooth_scalar_curve(
+        r_plot,
+        upper_plot,
+        upsample_factor=6,
+        sigma=max(1.0, 0.75 * PROFILE_CURVE_SMOOTH_SIGMA),
+    )
+    _, lower_plot = _smooth_scalar_curve(
+        np.concatenate(([0.0], r_valid, [r_max])),
+        lower_plot,
+        upsample_factor=6,
+        sigma=max(1.0, 0.75 * PROFILE_CURVE_SMOOTH_SIGMA),
+    )
+
+    upper_raw_dense = np.interp(r_plot, np.concatenate(([0.0], r_valid, [r_max])), upper_raw_plot)
+    lower_raw_dense = np.interp(r_plot, np.concatenate(([0.0], r_valid, [r_max])), lower_raw_plot)
+    upper_plot = np.maximum(upper_plot, upper_raw_dense)
+    lower_plot = np.minimum(lower_plot, lower_raw_dense)
+    upper_plot[0] = axis_upper
+    lower_plot[0] = axis_lower
+    upper_plot[-1] = outer_upper
+    lower_plot[-1] = outer_lower
+
+    # Drawing helpers expect r as a function of z for regular modes; mode1 uses upper/lower z(r).
+    return {
+        "z": np.concatenate((lower_plot, upper_plot)),
+        "outer_r": np.concatenate((r_plot, r_plot)),
+        "inner_r": np.zeros_like(np.concatenate((r_plot, r_plot))),
+        "mode1_r": r_plot,
+        "mode1_upper_z": upper_plot,
+        "mode1_lower_z": lower_plot,
+    }
+
+
 def _side_tip_radius_for_endpoint(r0, z0, slope, z_tip):
     dz = z0 - z_tip
     if dz <= 0 or slope is None or slope >= -1e-9:
@@ -449,6 +554,14 @@ def _prepend_side_arc(z_vals, r_vals, z_tip, r_tip, arc_samples=24):
 
 
 def _build_plot_curves(profile, mode):
+    if mode == 1 and "mode1_r" in profile:
+        return (
+            np.asarray(profile["mode1_r"], dtype=float),
+            np.asarray(profile["mode1_upper_z"], dtype=float),
+            np.asarray(profile["mode1_r"], dtype=float),
+            np.asarray(profile["mode1_lower_z"], dtype=float),
+        )
+
     z_outer = np.asarray(profile["z"], dtype=float)
     r_outer = np.asarray(profile["outer_r"], dtype=float)
 
@@ -493,6 +606,9 @@ def _build_plot_curves(profile, mode):
 
 
 def build_profile_from_side_points(side_points, mode=None):
+    if mode == 1:
+        return _build_mode1_profile_from_side_points(side_points)
+
     if side_points.shape[0] < 8:
         return None
 
@@ -709,6 +825,56 @@ def _plot_profile_wall(ax, z_vals, r_vals, color, alpha, label=None, y_plane=0.0
 
 
 def draw_mode_workspace(ax, profile, mode, style="real_3d"):
+    if mode == 1 and "mode1_r" in profile:
+        r_plot = np.asarray(profile["mode1_r"], dtype=float)
+        upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
+        lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
+
+        if style == "pseudo_3d":
+            x_poly = np.concatenate([r_plot, r_plot[::-1], -r_plot, -r_plot[::-1]])
+            z_poly = np.concatenate([upper_z, lower_z[::-1], lower_z, upper_z[::-1]])
+            y_poly = np.zeros_like(x_poly)
+            verts = np.column_stack((x_poly, y_poly, z_poly))
+            poly = ax.plot_trisurf(
+                verts[:, 0],
+                verts[:, 1],
+                verts[:, 2],
+                triangles=np.array([[0, i, i + 1] for i in range(1, len(verts) - 1)], dtype=int),
+                color=MODE_COLORS[mode],
+                alpha=0.78,
+                linewidth=0,
+                edgecolor="none",
+                antialiased=True,
+                shade=False,
+            )
+            try:
+                poly.set_edgecolor((0, 0, 0, 0))
+                poly.set_zsort("min")
+            except Exception:
+                pass
+            ax.plot([], [], [], color=MODE_COLORS[mode], alpha=0.78, label=MODE_LABELS[mode])
+            return
+
+        plot_revolved_profile(
+            ax,
+            upper_z,
+            r_plot,
+            color=MODE_COLORS[mode],
+            alpha=REACH_ALPHA,
+            label=MODE_LABELS[mode],
+            cap_ends=False,
+        )
+        plot_revolved_profile(
+            ax,
+            lower_z,
+            r_plot,
+            color=MODE_COLORS[mode],
+            alpha=REACH_ALPHA,
+            label=None,
+            cap_ends=False,
+        )
+        return
+
     outer_z_plot, outer_r_plot, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
 
     if style == "pseudo_3d":
@@ -758,6 +924,31 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
 
 
 def draw_mode_side_view(ax, profile, mode):
+    if mode == 1 and "mode1_r" in profile:
+        r_plot = np.asarray(profile["mode1_r"], dtype=float)
+        upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
+        lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
+
+        ax.fill_between(r_plot, lower_z, upper_z, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
+        ax.fill_between(-r_plot, lower_z, upper_z, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
+        ax.plot(r_plot, upper_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+        ax.plot(-r_plot, upper_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+        ax.plot(r_plot, lower_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+        ax.plot(-r_plot, lower_z, color=MODE_COLORS[mode], linewidth=1.0, alpha=0.9)
+
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.35)
+        if DISPLAY_IN_MM:
+            mm_formatter = FuncFormatter(lambda value, _pos: f"{value * 1000:.0f}")
+            ax.xaxis.set_major_formatter(mm_formatter)
+            ax.yaxis.set_major_formatter(mm_formatter)
+            ax.set_xlabel("Y (mm)")
+            ax.set_ylabel("Z (mm)")
+        else:
+            ax.set_xlabel("Y")
+            ax.set_ylabel("Z")
+        return
+
     z, outer_r, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
 
     ax.fill_betweenx(z, -outer_r, outer_r, color=MODE_COLORS[mode], alpha=0.65, linewidth=0)
@@ -814,6 +1005,16 @@ def draw_mode_side_scatter(ax, side_points, mode):
 
 
 def overlay_profile_curves(ax, profile, mode):
+    if mode == 1 and "mode1_r" in profile:
+        r_plot = np.asarray(profile["mode1_r"], dtype=float)
+        upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
+        lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
+        ax.plot(r_plot, upper_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        ax.plot(-r_plot, upper_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        ax.plot(r_plot, lower_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        ax.plot(-r_plot, lower_z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
+        return
+
     z, outer_r, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
 
     ax.plot(outer_r, z, color=MODE_COLORS[mode], linewidth=2.0, alpha=0.95)
