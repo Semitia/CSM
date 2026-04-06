@@ -16,10 +16,10 @@ from tqdm.auto import tqdm
 from csm.model import CSM
 
 # ===== Data source =====
-CONFIG_NAME = "csm_cfg_0.yaml"
+CONFIG_NAME = "csm_cfg_3mm.yaml"
 CONFIG_PATH = Path("./config") / CONFIG_NAME
 # PLOT_MODES = [1, 2, 3, 4]
-PLOT_MODES = [0]
+PLOT_MODES = [1]
 COMBINED_SOURCE_MODES = (1, 2, 3, 4)
 CACHE_DIR = Path("./data/profile_cache")
 USE_CACHE = True
@@ -81,6 +81,9 @@ PSEUDO_VIEW_ELEV = 10
 PSEUDO_VIEW_AZIM = -88
 SIDE_REAL_VIEW_ELEV = 0
 SIDE_REAL_VIEW_AZIM = -90
+SHOW_MANIPULATOR = True
+MANIPULATOR_RENDER_MODE = "detailed"
+MANIPULATOR_RNG_SEED = 20260406
 
 
 def _linspace_from_zero(stop, num):
@@ -1126,33 +1129,49 @@ def _concat_curve_segments(segments):
     return np.vstack(merged)
 
 
-def _extract_axis_flat_segment_near_max_radius(curve, tol=1e-5):
+def _extract_axis_flat_segment_near_max_radius(curve, tol=1e-5, min_points=4):
     curve = np.asarray(curve, dtype=float)
     if curve.ndim != 2 or curve.shape[0] < 2:
         return curve
 
     r_vals = curve[:, 0]
     max_r = float(np.max(r_vals))
-    mask = r_vals >= max_r - tol
+
+    # Small workspaces can turn the ideal vertical segment into a lightly
+    # jittered band, so use an adaptive tolerance around the outer endpoint.
+    endpoint_window = r_vals[:min(24, r_vals.size)]
+    endpoint_jitter = 0.0
+    if endpoint_window.size >= 3:
+        endpoint_jitter = float(np.percentile(np.abs(np.diff(endpoint_window)), 90))
+    adaptive_tol = max(float(tol), 2.5 * endpoint_jitter, 5e-3 * max_r)
+
+    mask = r_vals >= max_r - adaptive_tol
     if not np.any(mask):
         return curve.copy()
 
+    prefix_false = np.flatnonzero(~mask)
+    if prefix_false.size == 0:
+        prefix_len = curve.shape[0]
+    else:
+        prefix_len = int(prefix_false[0])
+    if prefix_len >= 2:
+        return curve[:prefix_len].copy()
+
     indices = np.flatnonzero(mask)
     splits = np.where(np.diff(indices) > 1)[0]
-    best_start = 0
-    best_end = 0
-    best_len = -1
+    best_run = indices[:1]
     start_idx = 0
     for split_idx in list(splits) + [len(indices) - 1]:
-        end_idx = split_idx
-        run = indices[start_idx:end_idx + 1]
-        if run.size > best_len:
-            best_len = run.size
-            best_start = int(run[0])
-            best_end = int(run[-1])
+        run = indices[start_idx:split_idx + 1]
+        if run.size > best_run.size:
+            best_run = run
         start_idx = split_idx + 1
 
-    return curve[best_start:best_end + 1].copy()
+    if best_run.size >= 2:
+        return curve[int(best_run[0]):int(best_run[-1]) + 1].copy()
+
+    fallback_len = min(max(int(min_points), 2), curve.shape[0])
+    return curve[:fallback_len].copy()
 
 
 def _build_mode0_void_outline_from_source_profiles(source_profiles, mode0_outer_curve=None):
@@ -1929,9 +1948,9 @@ def configure_side_view_axes(ax, all_profiles):
         return
 
     pad_r = 0.08 * outer_max
-    pad_z = 0.08 * (z_max - z_min)
+    pad_z = 0.08 * max(z_max, z_max - z_min)
     ax.set_xlim(-(outer_max + pad_r), outer_max + pad_r)
-    ax.set_ylim(z_min - pad_z, z_max + pad_z)
+    ax.set_ylim(0.0, z_max + pad_z)
 
 
 def _load_or_sample_mode_points(csm, mode):
@@ -1943,6 +1962,111 @@ def _load_or_sample_mode_points(csm, mode):
     side_points = sample_mode_side_points(csm, mode, MODE_SAMPLE_RES[mode])
     _save_profile_cache(mode, side_points)
     return side_points
+
+
+def _sample_random_mode_state(csm, mode, rng):
+    phi = float(rng.uniform(0.0, 2.0 * np.pi))
+    L1 = 0.0
+    L2 = float(csm.L_20)
+    Lr = 0.0
+    Ls = 0.0
+    theta_1 = 0.0
+    theta_2 = 0.0
+    delta_1 = 0.0
+    delta_2 = 0.0
+
+    if mode == 1:
+        L2 = float(rng.uniform(0.0, csm.L_20))
+        theta_2 = float(rng.uniform(0.0, csm.kappa_20 * L2)) if L2 > 0.0 else 0.0
+        delta_2 = float(rng.uniform(0.0, 2.0 * np.pi))
+    elif mode == 2:
+        Lr = float(rng.uniform(0.0, csm.L_r0))
+        theta_2 = float(rng.uniform(0.0, csm.kappa_20 * csm.L_20))
+        delta_2 = float(rng.uniform(0.0, 2.0 * np.pi))
+    elif mode == 3:
+        L1 = float(rng.uniform(0.0, csm.L_10))
+        Lr = float(csm.L_r0)
+        theta_1 = float(rng.uniform(0.0, csm.kappa_10 * L1)) if L1 > 0.0 else 0.0
+        theta_2 = float(rng.uniform(0.0, csm.kappa_20 * csm.L_20))
+        delta_1 = float(rng.uniform(0.0, 2.0 * np.pi))
+        delta_2 = float(rng.uniform(0.0, 2.0 * np.pi))
+    elif mode == 4:
+        L1 = float(csm.L_10)
+        L2 = float(csm.L_20)
+        Lr = float(csm.L_r0)
+        Ls = float(rng.uniform(0.0, csm.L_s0))
+        theta_1 = float(rng.uniform(0.0, csm.kappa_10 * csm.L_10))
+        theta_2 = float(rng.uniform(0.0, csm.kappa_20 * csm.L_20))
+        delta_1 = float(rng.uniform(0.0, 2.0 * np.pi))
+        delta_2 = float(rng.uniform(0.0, 2.0 * np.pi))
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    state = {
+        "mode": int(mode),
+        "phi": phi,
+        "L1": L1,
+        "L2": L2,
+        "Lr": Lr,
+        "Ls": Ls,
+        "theta_1": theta_1,
+        "theta_2": theta_2,
+        "delta_1": delta_1,
+        "delta_2": delta_2,
+    }
+    csm.set_state(**state)
+    return state
+
+
+def _apply_mode_state(csm, state):
+    csm.set_state(
+        mode=int(state["mode"]),
+        phi=float(state["phi"]),
+        L1=float(state["L1"]),
+        L2=float(state["L2"]),
+        Lr=float(state["Lr"]),
+        Ls=float(state["Ls"]),
+        theta_1=float(state["theta_1"]),
+        theta_2=float(state["theta_2"]),
+        delta_1=float(state["delta_1"]),
+        delta_2=float(state["delta_2"]),
+    )
+
+
+def _sample_manipulator_states():
+    if not SHOW_MANIPULATOR:
+        return {}
+
+    rng = np.random.default_rng(MANIPULATOR_RNG_SEED)
+    csm = CSM.from_config(CONFIG_PATH)
+    sampled_states = {}
+    for mode in PLOT_MODES:
+        if mode == 0:
+            state_list = []
+            for source_mode in COMBINED_SOURCE_MODES:
+                state_list.append(_sample_random_mode_state(csm, source_mode, rng))
+            sampled_states[0] = state_list
+            continue
+        sampled_states[mode] = [_sample_random_mode_state(csm, mode, rng)]
+    return sampled_states
+
+
+def _overlay_manipulators(ax, manipulator_states):
+    if not SHOW_MANIPULATOR or ax is None:
+        return
+
+    overlay_csm = CSM.from_config(CONFIG_PATH)
+    for state in manipulator_states:
+        _apply_mode_state(overlay_csm, state)
+        overlay_csm.target_pose = overlay_csm.pose.copy()
+        overlay_csm.plot_manipulator(
+            ax,
+            render_mode=MANIPULATOR_RENDER_MODE,
+            clear_ax=False,
+            draw_target=False,
+            configure_axes=False,
+            title=None,
+        )
 
 
 def generate_profiles():
@@ -1983,11 +2107,12 @@ def generate_profiles():
             print(f"Mode {mode}: failed to build profile")
             continue
         profiles[mode] = profile
-    return profiles, sampled_points
+    manipulator_states = _sample_manipulator_states()
+    return profiles, sampled_points, manipulator_states
 
 
 def main():
-    profiles, sampled_points = generate_profiles()
+    profiles, sampled_points, manipulator_states = generate_profiles()
     if not profiles:
         raise RuntimeError("No valid workspace profiles were generated.")
 
@@ -2000,6 +2125,7 @@ def main():
                 ax.set_axis_off()
                 continue
             draw_mode_workspace(ax, profiles[mode], mode, style=MAIN_VIEW_STYLE)
+            _overlay_manipulators(ax, manipulator_states.get(mode, []))
             ax.set_title(_display_label_for_mode(mode))
             configure_axes(ax, all_profiles, style=MAIN_VIEW_STYLE, role="main")
         for ax in axes[len(PLOT_MODES):]:
@@ -2032,6 +2158,7 @@ def main():
             if mode not in profiles:
                 continue
             draw_mode_workspace(ax, profiles[mode], mode, style=MAIN_VIEW_STYLE)
+            _overlay_manipulators(ax, manipulator_states.get(mode, []))
             if side_ax is not None:
                 if SIDE_VIEW_STYLE == "pseudo_3d":
                     draw_mode_side_view(side_ax, profiles[mode], mode)

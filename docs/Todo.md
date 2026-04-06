@@ -33,9 +33,16 @@ mode2,3,4看起来没太大问题。mode1还有问题，表现为：1.顶端没�
 
 - [ ]
 mode 0绘制有bug
+目前的mode 0的可视化还有bug。这里第一张图对应csm_cfg_3mm的配置，内轮廓识别有问题，第二张是csm_cfg_0的配置，没有问题。我现在在考虑能否让mode 0 的绘制逻辑更稳健一点，能适应不用cfg
+为什么你运行的时候总是在采样？我这个仓库不是明明有采样好的吗？
+暂时搁置
 
 - [ ] 
-plot_workspace添加arm可视化
+plot_workspace_2 添加arm可视化
+我现在有csm.plot_manipulator(ax, render_mode="detailed")方法，我想让plot_workspace_2现在在绘制每个mode的时候顺便采样一个对应mode的配置，然后画一个机械臂上去。
+
+- [ ] mode1 内轮廓
+plot_workspace_2 现在是mode2，3，4都有内轮廓/内部不可达域的绘制的，但是mode1没有。我现在想了一下还是应该有。思路和其他mode类似，也是一个凸包包裹了translation workspace，凸包减去translation workspace就是这个不可达区域。两张图片，一个是目前效果，一个是我想要的效果（我先用手画的，你应该能理解我的意思？）
 
 - [ ] 
 3.4mm,6mm

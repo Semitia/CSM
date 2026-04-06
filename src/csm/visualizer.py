@@ -116,7 +116,6 @@ class Visualizer:
         lg.draw(ax, reverse_color=reverse_color)
 
     def _plot_detailed(self, csm, ax, reverse_color=False):
-        ax.clear()
         geometry = csm.get_visualization_segments()
         radius = self._robot_radius(csm)
         tendon_radius = radius * self.tendon_radius_ratio
@@ -175,8 +174,9 @@ class Visualizer:
 
         self._draw_tool(ax, geometry["tool"], radius * 1.05)
 
-    def plot(self, csm, ax, reverse_color=False, render_mode=None):
-        ax.clear()
+    def plot(self, csm, ax, reverse_color=False, render_mode=None, clear_ax=True, configure_axes=True, title="Manipulator Movement"):
+        if clear_ax:
+            ax.clear()
         mode = self.default_render_mode if render_mode is None else render_mode
         if mode not in {"simple", "detailed"}:
             raise ValueError(f"Unsupported render_mode: {mode}")
@@ -185,8 +185,10 @@ class Visualizer:
         else:
             self._plot_detailed(csm, ax, reverse_color=reverse_color)
 
-        ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
-        ax.set_xlim([-1, 1]); ax.set_ylim([-1, 1]); ax.set_zlim([0, 1])
-        ax.set_box_aspect([1, 1, 1])
-        plt.title('Manipulator Movement')
-        plt.grid(True)
+        if configure_axes:
+            ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+            ax.set_xlim([-1, 1]); ax.set_ylim([-1, 1]); ax.set_zlim([0, 1])
+            ax.set_box_aspect([1, 1, 1])
+            if title is not None:
+                plt.title(title)
+            plt.grid(True)

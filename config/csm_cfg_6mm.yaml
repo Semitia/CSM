@@ -6,7 +6,7 @@ robot:
   L_tool: 0.03239
   theta1_max: 1.5708
   theta2_max: 2.09
-  ri_min: 0.00753
+  # ri_min: 0.00753
   delta_t: 0.001
 
 control:

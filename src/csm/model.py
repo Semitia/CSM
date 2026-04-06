@@ -395,28 +395,47 @@ class CSM:
         self.last_pose = self.pose
         print(f"mode {self.mode} , pre_omega: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , omega: [{', '.join([f'{x:.3f}' for x in delta_ori])}]", "d_PHI: ", self.d_PHI * self.delta_t)
 
-    def plot_manipulator(self, ax, reverse_color=False, render_mode="detailed"):
+    def plot_manipulator(
+        self,
+        ax,
+        reverse_color=False,
+        render_mode="detailed",
+        clear_ax=True,
+        draw_target=True,
+        configure_axes=True,
+        title="Manipulator Movement",
+    ):
         from .visualizer import Visualizer
 
         if not hasattr(self, "_visualizer"):
             self._visualizer = Visualizer(default_render_mode=render_mode)
-        self._visualizer.plot(self, ax, reverse_color=reverse_color, render_mode=render_mode)
+        self._visualizer.plot(
+            self,
+            ax,
+            reverse_color=reverse_color,
+            render_mode=render_mode,
+            clear_ax=clear_ax,
+            configure_axes=configure_axes,
+            title=title,
+        )
         
         total_length = self.L_10 + self.L_20 + self.L_r0 + self.L_s0 + self.L_tool
         total_weight = total_length - self.L_s0
-        # 绘制目标位姿箭头
-        tp, to = self.target_pose[:3], self.target_pose[3:6]
-        ax.quiver(tp[0], tp[1], tp[2], to[0], to[1], to[2],
-                  length=0.15*total_length, color='g', linewidth=2, arrow_length_ratio=0.6)
-        ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
-        ax.set_box_aspect([1, 1, 1])
-        total_length = self.L_10 + self.L_20 + self.L_r0 + self.L_s0 + self.L_tool
-        total_weight = total_length - self.L_s0
-        ax.set_xlim([-total_weight, total_weight])
-        ax.set_ylim([-total_weight, total_weight])
-        ax.set_zlim([0, total_length])
-        plt.title('Manipulator Movement')
-        plt.grid(True)
+        if draw_target:
+            tp, to = self.target_pose[:3], self.target_pose[3:6]
+            ax.quiver(
+                tp[0], tp[1], tp[2], to[0], to[1], to[2],
+                length=0.15 * total_length, color='g', linewidth=2, arrow_length_ratio=0.6
+            )
+        if configure_axes:
+            ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+            ax.set_box_aspect([1, 1, 1])
+            ax.set_xlim([-total_weight, total_weight])
+            ax.set_ylim([-total_weight, total_weight])
+            ax.set_zlim([0, total_length])
+            if title is not None:
+                plt.title(title)
+            plt.grid(True)
 
     def check_transition(self):
         if self.mode == 1 and self.L2 > self.L_20:
