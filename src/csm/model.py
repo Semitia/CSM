@@ -9,7 +9,7 @@ from .utils import calculate_angular_velocity, skew_symmetric_matrix, damped_pse
 
 class CSM:
     def __init__(self, L_10, L_20, L_r0, L_s0, L_tool,
-                 theta1_max=np.pi/2, theta2_max=2*np.pi/3, delta_t=0.01):
+                 theta1_max=np.pi/2, theta2_max=2*np.pi/3, delta_t=0.01, ri_min=None):
         """
         初始化连续体机器人模型
         参数:
@@ -21,6 +21,7 @@ class CSM:
             theta1_max: segment 1的最大弯曲角度 (rad)
             theta2_max: segment 2的最大弯曲角度 (rad)
             delta_t: 每步时间间隔 (s)
+            ri_min: 最小弯曲半径 (m)，用于限制最大曲率
         """
         self.mode = 1
         self.delta_t = delta_t
@@ -38,8 +39,21 @@ class CSM:
         self.theta_2 = 0
         self.delta_1 = 0
         self.delta_2 = 0
-        self.kappa_10 = theta1_max / L_10
-        self.kappa_20 = theta2_max / L_20
+        self.theta1_max = float(theta1_max)
+        self.theta2_max = float(theta2_max)
+        self.ri_min = None if ri_min is None else float(ri_min)
+
+        self.kappa_10 = self.theta1_max / L_10
+        self.kappa_20 = self.theta2_max / L_20
+        if self.ri_min is not None:
+            if self.ri_min <= 0:
+                raise ValueError("ri_min must be positive.")
+            curvature_limit = 1.0 / self.ri_min
+            self.kappa_10 = min(self.kappa_10, curvature_limit)
+            self.kappa_20 = min(self.kappa_20, curvature_limit)
+
+        self.theta1_limit = self.kappa_10 * self.L_10
+        self.theta2_limit = self.kappa_20 * self.L_20
         self._seg_J = {
             1: {"v2": None, "w2": None, "v3": None, "w3": None},
             2: {"v2": None, "w2": None, "v3": None, "w3": None},
@@ -497,5 +511,6 @@ class CSM:
             L_tool=r["L_tool"],
             theta1_max=r["theta1_max"],
             theta2_max=r["theta2_max"],
+            ri_min=r.get("ri_min"),
             delta_t=r["delta_t"]
         )
