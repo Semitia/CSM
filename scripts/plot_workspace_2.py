@@ -10,16 +10,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import FuncFormatter
 from matplotlib.gridspec import GridSpec
+from mpl_toolkits.mplot3d import proj3d
 from scipy.ndimage import gaussian_filter1d
 from tqdm.auto import tqdm
 
 from csm.model import CSM
 
 # ===== Data source =====
-CONFIG_NAME = "csm_cfg_3mm.yaml"
+CONFIG_NAME = "csm_cfg_6mm.yaml"
 CONFIG_PATH = Path("./config") / CONFIG_NAME
 # PLOT_MODES = [1, 2, 3, 4]
-PLOT_MODES = [0]
+PLOT_MODES = [1]
 COMBINED_SOURCE_MODES = (1, 2, 3, 4)
 CACHE_DIR = Path("./data/profile_cache")
 USE_CACHE = True
@@ -63,7 +64,7 @@ SIDE_VIEW_STYLE = "pseudo_3d"   # "pseudo_3d" | "real_3d"
 MODE_COLORS = {1: "#9FD4EA", 2: "#9FD4EA", 3: "#9FD4EA", 4: "#9FD4EA"}
 MODE_LABELS = {1: "C1", 2: "C2", 3: "C3", 4: "C4"}
 UNREACHABLE_COLOR = "#D79A6B"
-COMBINED_REACHABLE_COLOR = "#86BFA3"
+COMBINED_REACHABLE_COLOR = "#9FD4EA"
 
 REACH_ALPHA = 0.34
 UNREACHABLE_ALPHA = 0.40
@@ -78,8 +79,9 @@ SHOW_AXES = True
 DISPLAY_IN_MM = True
 SHOW_SIDE_VIEW = True
 SHOW_SAMPLE_SCATTER = True
-PSEUDO_VIEW_ELEV = 10
-PSEUDO_VIEW_AZIM = -88
+PSEUDO_VIEW_ELEV = 18
+PSEUDO_VIEW_AZIM = -40
+PSEUDO_MERIDIAN_SAMPLES = 240
 SIDE_REAL_VIEW_ELEV = 0
 SIDE_REAL_VIEW_AZIM = -90
 SHOW_MANIPULATOR = True
@@ -174,6 +176,34 @@ def _prepare_csm_for_mode(csm, mode):
 
 def _side_radius(point):
     return float(np.hypot(point[0], point[1]))
+
+
+def _resolve_side_view_reference_angle(points):
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[0] == 0 or points.shape[1] != 3:
+        return 0.0
+
+    radii = np.hypot(points[:, 0], points[:, 1])
+    valid_indices = np.flatnonzero(radii > 1e-9)
+    if valid_indices.size == 0:
+        return 0.0
+
+    ref_point = points[int(valid_indices[-1])]
+    return float(np.arctan2(ref_point[0], ref_point[1]))
+
+
+def _map_points_to_side_view(points, reference_angle=None):
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[0] == 0 or points.shape[1] != 3:
+        return np.empty((0, 2), dtype=float)
+
+    if reference_angle is None:
+        reference_angle = _resolve_side_view_reference_angle(points)
+
+    cos_a = float(np.cos(reference_angle))
+    sin_a = float(np.sin(reference_angle))
+    side_coord = -points[:, 0] * sin_a + points[:, 1] * cos_a
+    return np.column_stack((side_coord, points[:, 2]))
 
 
 def _count_mode_side_samples(csm, mode, sample_cfg):
@@ -889,6 +919,142 @@ def _build_mode1_profile_from_side_points(side_points):
     return profile
 
 
+def _build_mode1_curve_envelope(r_samples, z_samples, num_bins=None):
+    r_samples = np.asarray(r_samples, dtype=float)
+    z_samples = np.asarray(z_samples, dtype=float)
+    valid = np.isfinite(r_samples) & np.isfinite(z_samples)
+    if np.count_nonzero(valid) < 4:
+        return None, None
+
+    r_samples = r_samples[valid]
+    z_samples = z_samples[valid]
+    max_r = float(np.max(r_samples))
+    if not np.isfinite(max_r) or max_r <= 0.0:
+        return None, None
+
+    if num_bins is None:
+        num_bins = max(220, 2 * PROFILE_R_BINS)
+    num_bins = int(max(num_bins, 16))
+
+    r_edges = np.linspace(0.0, max_r, num_bins + 1)
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+    r_bin_idx = np.clip(np.digitize(r_samples, r_edges) - 1, 0, len(r_centers) - 1)
+
+    env_z = np.full(r_centers.shape, np.nan, dtype=float)
+    for i in range(len(r_centers)):
+        row_points = z_samples[r_bin_idx == i]
+        if row_points.size > 0:
+            env_z[i] = np.max(row_points)
+
+    valid_bins = np.isfinite(env_z)
+    if np.count_nonzero(valid_bins) < 4:
+        return None, None
+
+    first = int(np.flatnonzero(valid_bins)[0])
+    last = int(np.flatnonzero(valid_bins)[-1])
+    r_valid = r_centers[first:last + 1]
+    env_raw = np.interp(r_valid, r_centers[valid_bins], env_z[valid_bins])
+
+    if PROFILE_CURVE_SMOOTH_SIGMA > 0:
+        env_smooth = gaussian_filter1d(env_raw, sigma=PROFILE_CURVE_SMOOTH_SIGMA, mode="nearest")
+    else:
+        env_smooth = env_raw.copy()
+
+    env_smooth = np.maximum(env_smooth, env_raw)
+
+    axis_mask = r_samples <= r_edges[1]
+    axis_z = float(np.max(z_samples[axis_mask])) if np.any(axis_mask) else float(np.max(z_samples))
+    outer_mask = r_samples >= r_edges[-2]
+    outer_z = float(np.max(z_samples[outer_mask])) if np.any(outer_mask) else float(env_smooth[-1])
+
+    r_plot = np.concatenate(([0.0], r_valid, [max_r]))
+    z_plot = np.concatenate(([axis_z], env_smooth, [outer_z]))
+    raw_plot = np.concatenate(([axis_z], env_raw, [outer_z]))
+    r_plot, z_plot = _smooth_scalar_curve(
+        r_plot,
+        z_plot,
+        upsample_factor=6,
+        sigma=max(1.0, 0.75 * PROFILE_CURVE_SMOOTH_SIGMA),
+    )
+    raw_dense = np.interp(r_plot, np.concatenate(([0.0], r_valid, [max_r])), raw_plot)
+    z_plot = np.maximum(z_plot, raw_dense)
+    z_plot[0] = axis_z
+    z_plot[-1] = outer_z
+    return r_plot, z_plot
+
+
+def _sin_over_theta(theta_vals):
+    theta_vals = np.asarray(theta_vals, dtype=float)
+    result = np.ones_like(theta_vals, dtype=float)
+    nonzero = np.abs(theta_vals) > 1e-9
+    result[nonzero] = np.sin(theta_vals[nonzero]) / theta_vals[nonzero]
+    return result
+
+
+def _one_minus_cos_over_theta(theta_vals):
+    theta_vals = np.asarray(theta_vals, dtype=float)
+    result = np.zeros_like(theta_vals, dtype=float)
+    nonzero = np.abs(theta_vals) > 1e-9
+    result[nonzero] = (1.0 - np.cos(theta_vals[nonzero])) / theta_vals[nonzero]
+    return result
+
+
+def _build_mode1_profile_from_geometry(csm, num_samples=None):
+    theta_max = float(csm.kappa_20 * csm.L_20)
+    tool_length = float(csm.L_tool)
+    kappa = float(csm.kappa_20)
+    arc_length = float(csm.L_20)
+    if arc_length <= 0.0:
+        return None
+
+    if num_samples is None:
+        num_samples = max(600, 3 * PROFILE_R_BINS, 3 * MODE_SAMPLE_RES[1]["theta2"])
+    num_samples = int(max(num_samples, 8))
+
+    theta_vals = np.linspace(0.0, theta_max, num_samples)
+    sin_over_theta = _sin_over_theta(theta_vals)
+    one_minus_cos_over_theta = _one_minus_cos_over_theta(theta_vals)
+    sin_theta = np.sin(theta_vals)
+    cos_theta = np.cos(theta_vals)
+
+    upper_r_samples = arc_length * one_minus_cos_over_theta + tool_length * sin_theta
+    upper_z_samples = arc_length * sin_over_theta + tool_length * cos_theta
+
+    if kappa <= 0.0:
+        lower_r_samples = tool_length * sin_theta
+        lower_z_samples = tool_length * cos_theta
+    else:
+        lower_r_samples = (1.0 - cos_theta) / kappa + tool_length * sin_theta
+        lower_z_samples = sin_theta / kappa + tool_length * cos_theta
+
+    upper_r_samples[0] = 0.0
+    upper_z_samples[0] = arc_length + tool_length
+    lower_r_samples[0] = 0.0
+    lower_z_samples[0] = tool_length
+
+    void_r, void_upper_z = _build_mode1_curve_envelope(lower_r_samples, lower_z_samples, num_bins=num_samples // 2)
+    if void_r is None or void_upper_z is None:
+        return None
+
+    void_floor_z = _build_mode1_void_floor(lower_z_samples)
+    profile = {
+        "z": np.concatenate((lower_z_samples, upper_z_samples)),
+        "outer_r": np.concatenate((upper_r_samples, upper_r_samples)),
+        "inner_r": np.zeros_like(np.concatenate((lower_r_samples, upper_r_samples))),
+        "mode1_r": upper_r_samples,
+        "mode1_upper_r": upper_r_samples,
+        "mode1_lower_r": lower_r_samples,
+        "mode1_upper_z": upper_z_samples,
+        "mode1_lower_z": lower_z_samples,
+        "mode1_analytic": True,
+    }
+    if void_floor_z is not None:
+        profile["mode1_void_r"] = void_r
+        profile["mode1_void_upper_z"] = void_upper_z
+        profile["mode1_void_floor_z"] = float(void_floor_z)
+    return profile
+
+
 def _build_mode1_void_floor(lower_z_vals):
     lower_z_vals = np.asarray(lower_z_vals, dtype=float)
     if lower_z_vals.size < 4:
@@ -1392,10 +1558,13 @@ def _build_mode0_profile_from_sources(side_points, source_profiles):
 
 
 def _build_mode1_plot_curves(profile):
-    upper_r = np.asarray(profile["mode1_r"], dtype=float)
-    lower_r = np.asarray(profile["mode1_r"], dtype=float)
+    upper_r = np.asarray(profile.get("mode1_upper_r", profile["mode1_r"]), dtype=float)
+    lower_r = np.asarray(profile.get("mode1_lower_r", profile["mode1_r"]), dtype=float)
     upper_z = np.asarray(profile["mode1_upper_z"], dtype=float)
     lower_z = np.asarray(profile["mode1_lower_z"], dtype=float)
+
+    if bool(profile.get("mode1_analytic", False)):
+        return upper_r, upper_z, lower_r, lower_z
 
     connected = _connect_curve_endpoints(
         upper_r,
@@ -1418,9 +1587,52 @@ def _build_mode1_void_curve(profile):
     void_floor_z = float(profile["mode1_void_floor_z"])
     if void_r.size < 4 or not np.isfinite(void_floor_z):
         return None, None, None
+    if "mode1_void_upper_z" in profile:
+        void_upper_z = np.asarray(profile["mode1_void_upper_z"], dtype=float)
+        if void_upper_z.size == void_r.size:
+            return void_r, void_upper_z, void_floor_z
     _upper_r, _upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
     void_upper_z = np.interp(void_r, lower_r, lower_z)
     return void_r, void_upper_z, void_floor_z
+
+
+def _build_mode1_void_tail(profile):
+    _upper_r, _upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+    if lower_r.size < 3 or lower_z.size != lower_r.size:
+        return None, None
+
+    tail_start = int(np.argmax(lower_r))
+    tail_r = np.asarray(lower_r[tail_start:], dtype=float)
+    tail_z = np.asarray(lower_z[tail_start:], dtype=float)
+    if tail_r.size < 2 or tail_z.size != tail_r.size:
+        return None, None
+    return tail_r, tail_z
+
+
+def _mode1_outer_lower_draw_curve(profile):
+    _upper_r, _upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+    tail_r, tail_z = _build_mode1_void_tail(profile)
+    if tail_r is None or tail_z is None or tail_r.size < 2:
+        return lower_r, lower_z
+
+    split_idx = max(1, len(lower_r) - len(tail_r))
+    return lower_r[:split_idx], lower_z[:split_idx]
+
+
+def _mode1_void_polygon(profile):
+    void_r, void_upper_z, void_floor_z = _build_mode1_void_curve(profile)
+    if void_r is None or void_upper_z is None or void_r.size < 4:
+        return None
+
+    tail_r, tail_z = _build_mode1_void_tail(profile)
+    if tail_r is not None and tail_z is not None:
+        polygon_r = np.concatenate([void_r, tail_r, [0.0]])
+        polygon_z = np.concatenate([void_upper_z, tail_z, [void_floor_z]])
+        return polygon_r, polygon_z, void_floor_z
+
+    polygon_r = np.concatenate([void_r, [void_r[-1], 0.0]])
+    polygon_z = np.concatenate([void_upper_z, [void_floor_z, void_floor_z]])
+    return polygon_r, polygon_z, void_floor_z
 
 
 def _build_plot_curves(profile, mode):
@@ -1473,7 +1685,9 @@ def _build_plot_curves(profile, mode):
     return z_outer, r_outer, z_inner, r_inner
 
 
-def build_profile_from_side_points(side_points, mode=None):
+def build_profile_from_side_points(side_points, mode=None, csm=None):
+    if mode == 1 and csm is not None:
+        return _build_mode1_profile_from_geometry(csm)
     if mode == 1:
         return _build_mode1_profile_from_side_points(side_points)
     if mode == 0:
@@ -1564,6 +1778,71 @@ def plot_revolved_profile(ax, z_vals, r_vals, color, alpha, label=None, cap_ends
         ax.plot([], [], [], color=color, alpha=alpha, label=label)
 
 
+def _plot_horizontal_disk(ax, z_level, radius, color, alpha):
+    radius = float(radius)
+    if radius <= 0.0:
+        return
+
+    theta = np.linspace(0.0, 2.0 * np.pi, REVOLVE_SAMPLES, endpoint=False)
+    radial = np.linspace(0.0, radius, CAP_RADIAL_SAMPLES)
+    theta_grid, radial_grid = np.meshgrid(theta, radial)
+    x = radial_grid * np.cos(theta_grid)
+    y = radial_grid * np.sin(theta_grid)
+    z = np.full_like(x, float(z_level))
+    verts = np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+    faces = _build_revolve_faces(len(radial), theta.size)
+    disk = ax.plot_trisurf(
+        verts[:, 0],
+        verts[:, 1],
+        verts[:, 2],
+        triangles=faces,
+        color=color,
+        alpha=alpha,
+        linewidth=0,
+        edgecolor="none",
+        antialiased=True,
+        shade=False,
+    )
+    try:
+        disk.set_edgecolor((0, 0, 0, 0))
+        disk.set_zsort("min")
+    except Exception:
+        pass
+
+
+def _plot_vertical_revolve_wall(ax, radius, z_start, z_end, color, alpha):
+    radius = float(radius)
+    z_start = float(z_start)
+    z_end = float(z_end)
+    if radius <= 0.0 or np.isclose(z_start, z_end):
+        return
+
+    theta = np.linspace(0.0, 2.0 * np.pi, REVOLVE_SAMPLES, endpoint=False)
+    z_vals = np.linspace(min(z_start, z_end), max(z_start, z_end), CAP_RADIAL_SAMPLES)
+    theta_grid, z_grid = np.meshgrid(theta, z_vals)
+    x = radius * np.cos(theta_grid)
+    y = radius * np.sin(theta_grid)
+    verts = np.column_stack((x.ravel(), y.ravel(), z_grid.ravel()))
+    faces = _build_revolve_faces(len(z_vals), theta.size)
+    wall = ax.plot_trisurf(
+        verts[:, 0],
+        verts[:, 1],
+        verts[:, 2],
+        triangles=faces,
+        color=color,
+        alpha=alpha,
+        linewidth=0,
+        edgecolor="none",
+        antialiased=True,
+        shade=False,
+    )
+    try:
+        wall.set_edgecolor((0, 0, 0, 0))
+        wall.set_zsort("min")
+    except Exception:
+        pass
+
+
 def _plot_profile_wall(ax, z_vals, r_vals, color, alpha, label=None, y_plane=0.0):
     z_vals, r_vals = _decimate_curve(np.asarray(z_vals), np.asarray(r_vals))
     x_poly = np.concatenate([r_vals, -r_vals[::-1]])
@@ -1589,6 +1868,72 @@ def _plot_profile_wall(ax, z_vals, r_vals, color, alpha, label=None, y_plane=0.0
         pass
     if label:
         ax.plot([], [], [], color=color, alpha=alpha, label=label)
+
+
+def _pseudo_plane_basis(elev_deg=PSEUDO_VIEW_ELEV, azim_deg=PSEUDO_VIEW_AZIM):
+    elev = np.deg2rad(float(elev_deg))
+    azim = np.deg2rad(float(azim_deg))
+    right = np.array([-np.sin(azim), np.cos(azim), 0.0], dtype=float)
+    up = np.array(
+        [-np.sin(elev) * np.cos(azim), -np.sin(elev) * np.sin(azim), np.cos(elev)],
+        dtype=float,
+    )
+    return right, up
+
+
+def _embed_pseudo_plane_polygon(x_vals, z_vals):
+    x_vals = np.asarray(x_vals, dtype=float)
+    z_vals = np.asarray(z_vals, dtype=float)
+    if x_vals.size == 0 or z_vals.size != x_vals.size:
+        return np.empty((0, 3), dtype=float)
+
+    right, up = _pseudo_plane_basis()
+    return x_vals[:, None] * right[None, :] + z_vals[:, None] * up[None, :]
+
+
+def _plot_pseudo_plane_polygon(ax, x_vals, z_vals, color, alpha, label=None):
+    verts = _embed_pseudo_plane_polygon(x_vals, z_vals)
+    if verts.shape[0] < 3:
+        return None
+
+    poly = ax.plot_trisurf(
+        verts[:, 0],
+        verts[:, 1],
+        verts[:, 2],
+        triangles=np.array([[0, i, i + 1] for i in range(1, len(verts) - 1)], dtype=int),
+        color=color,
+        alpha=alpha,
+        linewidth=0,
+        edgecolor="none",
+        antialiased=True,
+        shade=False,
+    )
+    try:
+        poly.set_edgecolor((0, 0, 0, 0))
+    except Exception:
+        pass
+    if label:
+        ax.plot([], [], [], color=color, alpha=alpha, label=label)
+    return poly
+
+
+def _plot_profile_on_pseudo_plane(ax, z_vals, r_vals, color, alpha, label=None):
+    z_vals, r_vals = _decimate_curve(np.asarray(z_vals), np.asarray(r_vals))
+    x_poly = np.concatenate([r_vals, -r_vals[::-1]])
+    z_poly = np.concatenate([z_vals, z_vals[::-1]])
+    return _plot_pseudo_plane_polygon(ax, x_poly, z_poly, color=color, alpha=alpha, label=label)
+
+
+def _plot_symmetric_band_on_pseudo_plane(ax, r_vals, lower_z_vals, upper_z_vals, color, alpha, label=None):
+    r_vals = np.asarray(r_vals, dtype=float)
+    lower_z_vals = np.asarray(lower_z_vals, dtype=float)
+    upper_z_vals = np.asarray(upper_z_vals, dtype=float)
+    if r_vals.size < 2 or lower_z_vals.size != r_vals.size or upper_z_vals.size != r_vals.size:
+        return None
+
+    x_poly = np.concatenate([r_vals, r_vals[::-1], -r_vals, -r_vals[::-1]])
+    z_poly = np.concatenate([upper_z_vals, lower_z_vals[::-1], lower_z_vals, upper_z_vals[::-1]])
+    return _plot_pseudo_plane_polygon(ax, x_poly, z_poly, color=color, alpha=alpha, label=label)
 
 
 def _plot_symmetric_band_wall(ax, r_vals, lower_z_vals, upper_z_vals, color, alpha, label=None, y_plane=0.0):
@@ -1669,6 +2014,16 @@ def _plot_mode0_void_wall(ax, profile, color, alpha, label=None, y_plane=0.0):
         ax.plot([], [], [], color=color, alpha=alpha, label=label)
 
 
+def _plot_mode0_void_on_pseudo_plane(ax, profile, color, alpha, label=None):
+    polygon = _mode0_void_polygon(profile)
+    if polygon is None:
+        return None
+    polygon_r, polygon_z, _floor_z = polygon
+    x_poly = np.concatenate([polygon_r, -polygon_r[::-1]])
+    z_poly = np.concatenate([polygon_z, polygon_z[::-1]])
+    return _plot_pseudo_plane_polygon(ax, x_poly, z_poly, color=color, alpha=alpha, label=label)
+
+
 def draw_mode_workspace(ax, profile, mode, style="real_3d"):
     display_color = _display_color_for_mode(mode)
     display_label = _display_label_for_mode(mode)
@@ -1682,36 +2037,48 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
         void_lower_z = np.full_like(void_r, void_floor_z)
 
         if style == "pseudo_3d":
-            _plot_profile_wall(
+            poly = _plot_profile_on_pseudo_plane(
                 ax,
                 outer_z_plot,
                 outer_r_plot,
                 color=display_color,
-                alpha=0.78,
+                alpha=1.0,
                 label=display_label,
-                y_plane=0.0,
             )
+            if poly is not None:
+                try:
+                    poly.set_zorder(1)
+                except Exception:
+                    pass
             if SHOW_UNREACHABLE and void_r.size >= 4:
                 if "mode0_void_outline_r" in profile:
-                    _plot_mode0_void_wall(
+                    poly = _plot_mode0_void_on_pseudo_plane(
                         ax,
                         profile,
                         color=UNREACHABLE_COLOR,
-                        alpha=0.82,
+                        alpha=1.0,
                         label=None,
-                        y_plane=0.0,
                     )
+                    if poly is not None:
+                        try:
+                            poly.set_zorder(2)
+                        except Exception:
+                            pass
                 else:
-                    _plot_symmetric_band_wall(
+                    poly = _plot_symmetric_band_on_pseudo_plane(
                         ax,
                         void_r,
                         void_lower_z,
                         void_upper_z,
                         color=UNREACHABLE_COLOR,
-                        alpha=0.82,
+                        alpha=1.0,
                         label=None,
-                        y_plane=0.0,
                     )
+                    if poly is not None:
+                        try:
+                            poly.set_zorder(2)
+                        except Exception:
+                            pass
             return
 
         plot_revolved_profile(
@@ -1738,41 +2105,55 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
     if mode == 1 and "mode1_r" in profile:
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
         void_r, void_upper_z, void_floor_z = _build_mode1_void_curve(profile)
+        void_tail_r, void_tail_z = _build_mode1_void_tail(profile)
+        lower_draw_r, lower_draw_z = _mode1_outer_lower_draw_curve(profile)
 
         if style == "pseudo_3d":
             x_poly = np.concatenate([upper_r, lower_r[::-1], -lower_r, -upper_r[::-1]])
             z_poly = np.concatenate([upper_z, lower_z[::-1], lower_z, upper_z[::-1]])
-            y_poly = np.zeros_like(x_poly)
-            verts = np.column_stack((x_poly, y_poly, z_poly))
-            poly = ax.plot_trisurf(
-                verts[:, 0],
-                verts[:, 1],
-                verts[:, 2],
-                triangles=np.array([[0, i, i + 1] for i in range(1, len(verts) - 1)], dtype=int),
+            poly = _plot_pseudo_plane_polygon(
+                ax,
+                x_poly,
+                z_poly,
                 color=display_color,
-                alpha=0.78,
-                linewidth=0,
-                edgecolor="none",
-                antialiased=True,
-                shade=False,
+                alpha=1.0,
+                label=display_label,
             )
-            try:
-                poly.set_edgecolor((0, 0, 0, 0))
-                poly.set_zsort("min")
-            except Exception:
-                pass
-            ax.plot([], [], [], color=display_color, alpha=0.78, label=display_label)
+            if poly is not None:
+                try:
+                    poly.set_zorder(1)
+                except Exception:
+                    pass
             if SHOW_UNREACHABLE and void_r is not None:
-                _plot_symmetric_band_wall(
-                    ax,
-                    void_r,
-                    np.full_like(void_r, void_floor_z),
-                    void_upper_z,
-                    color=UNREACHABLE_COLOR,
-                    alpha=0.82,
-                    label=None,
-                    y_plane=0.0,
-                )
+                void_polygon = _mode1_void_polygon(profile)
+                poly = None
+                if void_polygon is not None:
+                    polygon_r, polygon_z, _ = void_polygon
+                    x_poly = np.concatenate([polygon_r, -polygon_r[::-1]])
+                    z_poly = np.concatenate([polygon_z, polygon_z[::-1]])
+                    poly = _plot_pseudo_plane_polygon(
+                        ax,
+                        x_poly,
+                        z_poly,
+                        color=UNREACHABLE_COLOR,
+                        alpha=1.0,
+                        label=None,
+                    )
+                else:
+                    poly = _plot_symmetric_band_on_pseudo_plane(
+                        ax,
+                        void_r,
+                        np.full_like(void_r, void_floor_z),
+                        void_upper_z,
+                        color=UNREACHABLE_COLOR,
+                        alpha=1.0,
+                        label=None,
+                    )
+                if poly is not None:
+                    try:
+                        poly.set_zorder(2)
+                    except Exception:
+                        pass
             return
 
         plot_revolved_profile(
@@ -1786,48 +2167,69 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
         )
         plot_revolved_profile(
             ax,
-            lower_z,
-            lower_r,
+            lower_draw_z,
+            lower_draw_r,
             color=display_color,
             alpha=REACH_ALPHA,
             label=None,
             cap_ends=False,
         )
         if SHOW_UNREACHABLE and void_r is not None:
-            plot_revolved_profile(
-                ax,
-                void_upper_z,
-                void_r,
-                color=UNREACHABLE_COLOR,
-                alpha=UNREACHABLE_ALPHA,
-                label=None,
-                cap_ends=False,
-            )
+            void_polygon = _mode1_void_polygon(profile)
+            if void_polygon is not None:
+                polygon_r, polygon_z, _ = void_polygon
+                plot_revolved_profile(
+                    ax,
+                    polygon_z,
+                    polygon_r,
+                    color=UNREACHABLE_COLOR,
+                    alpha=UNREACHABLE_ALPHA,
+                    label=None,
+                    cap_ends=False,
+                )
+            else:
+                plot_revolved_profile(
+                    ax,
+                    void_upper_z,
+                    void_r,
+                    color=UNREACHABLE_COLOR,
+                    alpha=UNREACHABLE_ALPHA,
+                    label=None,
+                    cap_ends=False,
+                )
         return
 
     outer_z_plot, outer_r_plot, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
 
     if style == "pseudo_3d":
-        _plot_profile_wall(
+        poly = _plot_profile_on_pseudo_plane(
             ax,
             outer_z_plot,
             outer_r_plot,
             color=display_color,
-            alpha=0.78,
+            alpha=1.0,
             label=display_label,
-            y_plane=0.0,
         )
+        if poly is not None:
+            try:
+                poly.set_zorder(1)
+            except Exception:
+                pass
         if SHOW_UNREACHABLE:
             if inner_z_plot is not None and inner_z_plot.size >= 4:
-                _plot_profile_wall(
+                poly = _plot_profile_on_pseudo_plane(
                     ax,
                     inner_z_plot,
                     inner_r_plot,
                     color=UNREACHABLE_COLOR,
-                    alpha=0.82,
+                    alpha=1.0,
                     label=None,
-                    y_plane=0.0,
                 )
+                if poly is not None:
+                    try:
+                        poly.set_zorder(2)
+                    except Exception:
+                        pass
         return
 
     plot_revolved_profile(
@@ -1851,6 +2253,216 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                 label=None,
                 cap_ends=False,
             )
+
+
+def _pseudo_projection_setup(all_profiles, manipulator_states_by_mode=None):
+    outer_max = 0.0
+    z_min = np.inf
+    z_max = -np.inf
+    for profile in all_profiles:
+        if len(profile["z"]) == 0:
+            continue
+        if "mode1_r" in profile:
+            upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+            outer_max = max(outer_max, float(np.max([np.max(upper_r), np.max(lower_r)])))
+            z_min = min(z_min, float(np.min([np.min(upper_z), np.min(lower_z)])))
+            z_max = max(z_max, float(np.max([np.max(upper_z), np.max(lower_z)])))
+        else:
+            outer_max = max(outer_max, float(np.max(profile["outer_r"])))
+            z_min = min(z_min, float(np.min(profile["z"])))
+            z_max = max(z_max, float(np.max(profile["z"])))
+
+    manip_bounds = _collect_side_view_manipulator_bounds(manipulator_states_by_mode)
+    if manip_bounds is not None:
+        y_min_manip, y_max_manip, z_min_manip, z_max_manip = manip_bounds
+        outer_max = max(outer_max, abs(y_min_manip), abs(y_max_manip))
+        z_min = min(z_min, z_min_manip)
+        z_max = max(z_max, z_max_manip)
+
+    if outer_max <= 0.0 or not np.isfinite(z_min) or not np.isfinite(z_max):
+        return None
+
+    x_center = 0.0
+    y_center = 0.0
+    z_center = 0.5 * (z_min + z_max)
+    half_range = 1.08 * max(outer_max, 0.5 * (z_max - z_min))
+    return {
+        "xlim": (x_center - half_range, x_center + half_range),
+        "ylim": (y_center - half_range, y_center + half_range),
+        "zlim": (z_center - half_range, z_center + half_range),
+    }
+
+
+def _pseudo_projection_matrix(all_profiles, manipulator_states_by_mode=None):
+    setup = _pseudo_projection_setup(all_profiles, manipulator_states_by_mode)
+    if setup is None:
+        return None
+
+    fig = plt.figure(figsize=(2, 2))
+    ax3d = fig.add_subplot(111, projection="3d")
+    ax3d.set_xlim(*setup["xlim"])
+    ax3d.set_ylim(*setup["ylim"])
+    ax3d.set_zlim(*setup["zlim"])
+    ax3d.set_box_aspect([1, 1, 1])
+    ax3d.view_init(elev=PSEUDO_VIEW_ELEV, azim=PSEUDO_VIEW_AZIM)
+    try:
+        ax3d.set_proj_type("ortho")
+    except Exception:
+        pass
+    proj = ax3d.get_proj()
+    plt.close(fig)
+    return proj
+
+
+def _project_points_to_pseudo_view(points, proj_matrix):
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3:
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+    if proj_matrix is None:
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float)
+
+    x_proj, y_proj, z_depth = proj3d.proj_transform(points[:, 0], points[:, 1], points[:, 2], proj_matrix)
+    return np.column_stack((x_proj, y_proj)), np.asarray(z_depth, dtype=float)
+
+
+def _revolve_section_points(r_vals, z_vals, theta):
+    r_vals = np.asarray(r_vals, dtype=float)
+    z_vals = np.asarray(z_vals, dtype=float)
+    if r_vals.size < 2 or z_vals.size != r_vals.size:
+        return np.empty((0, 3), dtype=float)
+
+    cos_t = float(np.cos(theta))
+    sin_t = float(np.sin(theta))
+    pos = np.column_stack((r_vals * cos_t, r_vals * sin_t, z_vals))
+    neg = np.column_stack((-r_vals[::-1] * cos_t, -r_vals[::-1] * sin_t, z_vals[::-1]))
+    return np.vstack((pos, neg))
+
+
+def _mode_outer_section_points(profile, mode, theta):
+    if mode == 1 and "mode1_r" in profile:
+        upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+        cos_t = float(np.cos(theta))
+        sin_t = float(np.sin(theta))
+        pos_upper = np.column_stack((upper_r * cos_t, upper_r * sin_t, upper_z))
+        pos_lower = np.column_stack((lower_r[::-1] * cos_t, lower_r[::-1] * sin_t, lower_z[::-1]))
+        neg_lower = np.column_stack((-lower_r * cos_t, -lower_r * sin_t, lower_z))
+        neg_upper = np.column_stack((-upper_r[::-1] * cos_t, -upper_r[::-1] * sin_t, upper_z[::-1]))
+        return np.vstack((pos_upper, pos_lower, neg_lower, neg_upper))
+
+    outer_z, outer_r, _, _ = _build_plot_curves(profile, mode)
+    return _revolve_section_points(outer_r, outer_z, theta)
+
+
+def _mode_unreachable_section_points(profile, mode, theta):
+    if mode == 0 and "mode0_void_r" in profile:
+        polygon = _mode0_void_polygon(profile)
+        if polygon is None:
+            return np.empty((0, 3), dtype=float)
+        polygon_r, polygon_z, _floor_z = polygon
+        return _revolve_section_points(polygon_r, polygon_z, theta)
+
+    if mode == 1 and "mode1_r" in profile:
+        polygon = _mode1_void_polygon(profile)
+        if polygon is None:
+            return np.empty((0, 3), dtype=float)
+        polygon_r, polygon_z, _floor_z = polygon
+        return _revolve_section_points(polygon_r, polygon_z, theta)
+
+    _outer_z, _outer_r, inner_z, inner_r = _build_plot_curves(profile, mode)
+    if inner_z is None or inner_z.size < 4:
+        return np.empty((0, 3), dtype=float)
+    return _revolve_section_points(inner_r, inner_z, theta)
+
+
+def _render_projected_polygons(ax, polygons_3d, proj_matrix, color, alpha=1.0, zorder=1):
+    projected_items = []
+    for poly3d in polygons_3d:
+        poly3d = np.asarray(poly3d, dtype=float)
+        if poly3d.ndim != 2 or poly3d.shape[0] < 3 or poly3d.shape[1] != 3:
+            continue
+        projected, depth = _project_points_to_pseudo_view(poly3d, proj_matrix)
+        if projected.shape[0] < 3:
+            continue
+        projected_items.append((float(np.mean(depth)), projected))
+
+    for _depth, projected in sorted(projected_items, key=lambda item: item[0]):
+        ax.fill(projected[:, 0], projected[:, 1], color=color, alpha=alpha, linewidth=0, zorder=zorder)
+
+
+def _surface_quads_from_curve(z_vals, r_vals, theta_samples=PSEUDO_MERIDIAN_SAMPLES):
+    z_vals, r_vals = _decimate_curve(np.asarray(z_vals, dtype=float), np.asarray(r_vals, dtype=float), max_axial_samples=40)
+    if z_vals.size < 2 or r_vals.size != z_vals.size:
+        return []
+
+    theta_vals = np.linspace(0.0, 2.0 * np.pi, int(max(theta_samples, 12)), endpoint=False)
+    quads = []
+    for theta_idx, theta0 in enumerate(theta_vals):
+        theta1 = theta_vals[(theta_idx + 1) % theta_vals.size]
+        c0, s0 = float(np.cos(theta0)), float(np.sin(theta0))
+        c1, s1 = float(np.cos(theta1)), float(np.sin(theta1))
+        for i in range(z_vals.size - 1):
+            r0 = float(r_vals[i])
+            r1 = float(r_vals[i + 1])
+            z0 = float(z_vals[i])
+            z1 = float(z_vals[i + 1])
+            quad = np.array(
+                [
+                    [r0 * c0, r0 * s0, z0],
+                    [r1 * c0, r1 * s0, z1],
+                    [r1 * c1, r1 * s1, z1],
+                    [r0 * c1, r0 * s1, z0],
+                ],
+                dtype=float,
+            )
+            quads.append(quad)
+    return quads
+
+
+def _render_projected_surface_quads(ax, quads, proj_matrix, color, alpha=1.0, zorder=1):
+    projected_items = []
+    for quad in quads:
+        projected, depth = _project_points_to_pseudo_view(quad, proj_matrix)
+        if projected.shape[0] < 4:
+            continue
+        projected_items.append((float(np.mean(depth)), projected))
+
+    for _depth, projected in sorted(projected_items, key=lambda item: item[0]):
+        ax.fill(projected[:, 0], projected[:, 1], color=color, alpha=alpha, linewidth=0, zorder=zorder)
+
+
+def draw_mode_main_pseudo(ax, profile, mode, proj_matrix):
+    display_color = _display_color_for_mode(mode)
+    outer_quads = []
+    unreachable_quads = []
+
+    if mode == 1 and "mode1_r" in profile:
+        upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
+        outer_quads.extend(_surface_quads_from_curve(upper_z, upper_r))
+        outer_quads.extend(_surface_quads_from_curve(lower_z, lower_r))
+        if SHOW_UNREACHABLE:
+            void_r, void_upper_z, _void_floor_z = _build_mode1_void_curve(profile)
+            if void_r is not None and void_r.size >= 4:
+                unreachable_quads.extend(_surface_quads_from_curve(void_upper_z, void_r))
+            void_tail_r, void_tail_z = _build_mode1_void_tail(profile)
+            if void_tail_r is not None and void_tail_z is not None and void_tail_r.size >= 2:
+                connector_r = np.array([void_tail_r[0], void_tail_r[0]], dtype=float)
+                connector_z = np.array([void_upper_z[-1], void_tail_z[0]], dtype=float)
+                unreachable_quads.extend(_surface_quads_from_curve(connector_z, connector_r))
+                unreachable_quads.extend(_surface_quads_from_curve(void_tail_z, void_tail_r))
+    else:
+        outer_z, outer_r, inner_z, inner_r = _build_plot_curves(profile, mode)
+        outer_quads.extend(_surface_quads_from_curve(outer_z, outer_r))
+        if SHOW_UNREACHABLE:
+            if mode == 0 and "mode0_void_outline_r" in profile:
+                void_outline_r = np.asarray(profile["mode0_void_outline_r"], dtype=float)
+                void_outline_z = np.asarray(profile["mode0_void_outline_z"], dtype=float)
+                unreachable_quads.extend(_surface_quads_from_curve(void_outline_z, void_outline_r))
+            elif inner_z is not None and inner_z.size >= 4:
+                unreachable_quads.extend(_surface_quads_from_curve(inner_z, inner_r))
+
+    _render_projected_surface_quads(ax, outer_quads, proj_matrix, color=display_color, alpha=1.0, zorder=1)
+    if unreachable_quads:
+        _render_projected_surface_quads(ax, unreachable_quads, proj_matrix, color=UNREACHABLE_COLOR, alpha=1.0, zorder=2)
 
 
 def draw_mode_side_view(ax, profile, mode):
@@ -1890,16 +2502,18 @@ def draw_mode_side_view(ax, profile, mode):
             mm_formatter = FuncFormatter(lambda value, _pos: f"{value * 1000:.0f}")
             ax.xaxis.set_major_formatter(mm_formatter)
             ax.yaxis.set_major_formatter(mm_formatter)
-            ax.set_xlabel("Y (mm)")
+            ax.set_xlabel("R (mm)")
             ax.set_ylabel("Z (mm)")
         else:
-            ax.set_xlabel("Y")
+            ax.set_xlabel("R")
             ax.set_ylabel("Z")
         return
 
     if mode == 1 and "mode1_r" in profile:
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
         void_r, void_upper_z, void_floor_z = _build_mode1_void_curve(profile)
+        void_tail_r, void_tail_z = _build_mode1_void_tail(profile)
+        lower_draw_r, lower_draw_z = _mode1_outer_lower_draw_curve(profile)
         pos_x = np.concatenate([upper_r, lower_r[::-1]])
         pos_y = np.concatenate([upper_z, lower_z[::-1]])
         neg_x = -pos_x
@@ -1907,20 +2521,58 @@ def draw_mode_side_view(ax, profile, mode):
         ax.fill(pos_x, pos_y, color=display_color, alpha=0.65, linewidth=0)
         ax.fill(neg_x, pos_y, color=display_color, alpha=0.65, linewidth=0)
         if SHOW_UNREACHABLE and void_r is not None:
-            pos_void_x = np.concatenate([void_r, void_r[::-1]])
-            pos_void_y = np.concatenate([void_upper_z, np.full_like(void_r, void_floor_z)[::-1]])
-            neg_void_x = -pos_void_x
-            ax.fill(pos_void_x, pos_void_y, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
-            ax.fill(neg_void_x, pos_void_y, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+            void_polygon = _mode1_void_polygon(profile)
+            if void_polygon is not None:
+                polygon_r, polygon_z, _ = void_polygon
+                ax.fill(polygon_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                ax.fill(-polygon_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+            else:
+                pos_void_x = np.concatenate([void_r, void_r[::-1]])
+                pos_void_y = np.concatenate([void_upper_z, np.full_like(void_r, void_floor_z)[::-1]])
+                neg_void_x = -pos_void_x
+                ax.fill(pos_void_x, pos_void_y, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                ax.fill(neg_void_x, pos_void_y, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
         ax.plot(upper_r, upper_z, color=display_color, linewidth=1.0, alpha=0.9)
         ax.plot(-upper_r, upper_z, color=display_color, linewidth=1.0, alpha=0.9)
-        ax.plot(lower_r, lower_z, color=display_color, linewidth=1.0, alpha=0.9)
-        ax.plot(-lower_r, lower_z, color=display_color, linewidth=1.0, alpha=0.9)
+        ax.plot(lower_draw_r, lower_draw_z, color=display_color, linewidth=1.0, alpha=0.9)
+        ax.plot(-lower_draw_r, lower_draw_z, color=display_color, linewidth=1.0, alpha=0.9)
         if SHOW_UNREACHABLE and void_r is not None:
             ax.plot(void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
             ax.plot(-void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
-            ax.plot(void_r, np.full_like(void_r, void_floor_z), color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.65)
-            ax.plot(-void_r, np.full_like(void_r, void_floor_z), color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.65)
+            if void_tail_r is not None and void_tail_z is not None and void_tail_r.size >= 2:
+                ax.plot(
+                    [float(void_tail_r[0]), float(void_tail_r[0])],
+                    [float(void_upper_z[-1]), float(void_tail_z[0])],
+                    color=UNREACHABLE_COLOR,
+                    linewidth=1.0,
+                    alpha=0.95,
+                )
+                ax.plot(
+                    [-float(void_tail_r[0]), -float(void_tail_r[0])],
+                    [float(void_upper_z[-1]), float(void_tail_z[0])],
+                    color=UNREACHABLE_COLOR,
+                    linewidth=1.0,
+                    alpha=0.95,
+                )
+                ax.plot(void_tail_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+                ax.plot(-void_tail_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+                ax.plot(
+                    [0.0, float(void_tail_r[-1])],
+                    [void_floor_z, void_floor_z],
+                    color=UNREACHABLE_COLOR,
+                    linewidth=1.0,
+                    alpha=0.65,
+                )
+                ax.plot(
+                    [0.0, -float(void_tail_r[-1])],
+                    [void_floor_z, void_floor_z],
+                    color=UNREACHABLE_COLOR,
+                    linewidth=1.0,
+                    alpha=0.65,
+                )
+            else:
+                ax.plot(void_r, np.full_like(void_r, void_floor_z), color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.65)
+                ax.plot(-void_r, np.full_like(void_r, void_floor_z), color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.65)
 
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, alpha=0.35)
@@ -1961,10 +2613,10 @@ def draw_mode_side_view(ax, profile, mode):
         mm_formatter = FuncFormatter(lambda value, _pos: f"{value * 1000:.0f}")
         ax.xaxis.set_major_formatter(mm_formatter)
         ax.yaxis.set_major_formatter(mm_formatter)
-        ax.set_xlabel("Y (mm)")
+        ax.set_xlabel("R (mm)")
         ax.set_ylabel("Z (mm)")
     else:
-        ax.set_xlabel("Y")
+        ax.set_xlabel("R")
         ax.set_ylabel("Z")
 
 
@@ -1983,10 +2635,10 @@ def draw_mode_side_scatter(ax, side_points, mode):
         mm_formatter = FuncFormatter(lambda value, _pos: f"{value * 1000:.0f}")
         ax.xaxis.set_major_formatter(mm_formatter)
         ax.yaxis.set_major_formatter(mm_formatter)
-        ax.set_xlabel("Y (mm)")
+        ax.set_xlabel("R (mm)")
         ax.set_ylabel("Z (mm)")
     else:
-        ax.set_xlabel("Y")
+        ax.set_xlabel("R")
         ax.set_ylabel("Z")
 
 
@@ -2012,13 +2664,32 @@ def overlay_profile_curves(ax, profile, mode):
     if mode == 1 and "mode1_r" in profile:
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
         void_r, void_upper_z, _void_floor_z = _build_mode1_void_curve(profile)
+        void_tail_r, void_tail_z = _build_mode1_void_tail(profile)
+        lower_draw_r, lower_draw_z = _mode1_outer_lower_draw_curve(profile)
         ax.plot(upper_r, upper_z, color=display_color, linewidth=2.0, alpha=0.95)
         ax.plot(-upper_r, upper_z, color=display_color, linewidth=2.0, alpha=0.95)
-        ax.plot(lower_r, lower_z, color=display_color, linewidth=2.0, alpha=0.95)
-        ax.plot(-lower_r, lower_z, color=display_color, linewidth=2.0, alpha=0.95)
+        ax.plot(lower_draw_r, lower_draw_z, color=display_color, linewidth=2.0, alpha=0.95)
+        ax.plot(-lower_draw_r, lower_draw_z, color=display_color, linewidth=2.0, alpha=0.95)
         if SHOW_UNREACHABLE and void_r is not None:
             ax.plot(void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
             ax.plot(-void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+            if void_tail_r is not None and void_tail_z is not None and void_tail_r.size >= 2:
+                ax.plot(
+                    [float(void_tail_r[0]), float(void_tail_r[0])],
+                    [float(void_upper_z[-1]), float(void_tail_z[0])],
+                    color=UNREACHABLE_COLOR,
+                    linewidth=2.0,
+                    alpha=0.95,
+                )
+                ax.plot(
+                    [-float(void_tail_r[0]), -float(void_tail_r[0])],
+                    [float(void_upper_z[-1]), float(void_tail_z[0])],
+                    color=UNREACHABLE_COLOR,
+                    linewidth=2.0,
+                    alpha=0.95,
+                )
+                ax.plot(void_tail_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+                ax.plot(-void_tail_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
         return
 
     z, outer_r, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
@@ -2029,6 +2700,82 @@ def overlay_profile_curves(ax, profile, mode):
     if inner_z_plot is not None and inner_z_plot.size >= 4:
         ax.plot(inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
         ax.plot(-inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+
+
+def _collect_pseudo_main_bounds(all_profiles, manipulator_states_by_mode=None, proj_matrix=None):
+    if proj_matrix is None:
+        return None
+    all_points = []
+    theta_vals = np.linspace(0.0, 2.0 * np.pi, max(24, PSEUDO_MERIDIAN_SAMPLES // 2), endpoint=False)
+    for mode, profile in zip(PLOT_MODES, all_profiles):
+        for theta in theta_vals:
+            outer_poly = _mode_outer_section_points(profile, mode, theta)
+            if outer_poly.shape[0] >= 3:
+                all_points.append(outer_poly)
+            if SHOW_UNREACHABLE:
+                unreachable_poly = _mode_unreachable_section_points(profile, mode, theta)
+                if unreachable_poly.shape[0] >= 3:
+                    all_points.append(unreachable_poly)
+
+    if SHOW_MANIPULATOR and manipulator_states_by_mode:
+        overlay_csm = CSM.from_config(CONFIG_PATH)
+        for state_list in manipulator_states_by_mode.values():
+            for state in state_list:
+                _apply_mode_state(overlay_csm, state)
+                geometry = overlay_csm.get_visualization_segments()
+                for segment in geometry.get("segments", []):
+                    points = np.asarray(segment.get("points"), dtype=float)
+                    if points.ndim == 2 and points.shape[1] == 3 and points.shape[0] > 0:
+                        all_points.append(points)
+                tool = geometry.get("tool", {})
+                for key in ("start", "end"):
+                    point = np.asarray(tool.get(key), dtype=float) if key in tool else None
+                    if point is not None and point.shape == (3,):
+                        all_points.append(point[np.newaxis, :])
+
+    if not all_points:
+        return None
+
+    projected_sets = []
+    for points in all_points:
+        projected, _depth = _project_points_to_pseudo_view(points, proj_matrix)
+        if projected.shape[0] > 0:
+            projected_sets.append(projected)
+    if not projected_sets:
+        return None
+
+    stacked = np.vstack(projected_sets)
+    x_min = float(np.min(stacked[:, 0]))
+    x_max = float(np.max(stacked[:, 0]))
+    y_min = float(np.min(stacked[:, 1]))
+    y_max = float(np.max(stacked[:, 1]))
+    return x_min, x_max, y_min, y_max
+
+
+def configure_pseudo_main_axes(ax, all_profiles, manipulator_states_by_mode=None, proj_matrix=None):
+    bounds = _collect_pseudo_main_bounds(all_profiles, manipulator_states_by_mode, proj_matrix=proj_matrix)
+    if bounds is None:
+        return
+
+    x_min, x_max, y_min, y_max = bounds
+    x_span = max(x_max - x_min, 1e-9)
+    y_span = max(y_max - y_min, 1e-9)
+    pad_x = 0.08 * x_span
+    pad_y = 0.08 * y_span
+    ax.set_xlim(x_min - pad_x, x_max + pad_x)
+    ax.set_ylim(y_min - pad_y, y_max + pad_y)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, alpha=0.35)
+
+    if DISPLAY_IN_MM:
+        mm_formatter = FuncFormatter(lambda value, _pos: f"{value * 1000:.0f}")
+        ax.xaxis.set_major_formatter(mm_formatter)
+        ax.yaxis.set_major_formatter(mm_formatter)
+        ax.set_xlabel("View X (mm)")
+        ax.set_ylabel("View Z (mm)")
+    else:
+        ax.set_xlabel("View X")
+        ax.set_ylabel("View Z")
 
 
 def configure_axes(ax, all_profiles, style="real_3d", role="main"):
@@ -2102,32 +2849,61 @@ def _collect_side_view_manipulator_bounds(manipulator_states_by_mode):
         for state in state_list:
             _apply_mode_state(overlay_csm, state)
             geometry = overlay_csm.get_visualization_segments()
+            geometry_points = []
 
             for segment in geometry.get("segments", []):
                 points = np.asarray(segment.get("points"), dtype=float)
                 if points.ndim != 2 or points.shape[0] == 0 or points.shape[1] != 3:
                     continue
-                y_min = min(y_min, float(np.min(points[:, 1])))
-                y_max = max(y_max, float(np.max(points[:, 1])))
-                z_min = min(z_min, float(np.min(points[:, 2])))
-                z_max = max(z_max, float(np.max(points[:, 2])))
+                geometry_points.append(points)
 
             tool = geometry.get("tool", {})
             for key in ("start", "end"):
                 point = np.asarray(tool.get(key), dtype=float) if key in tool else None
                 if point is None or point.shape != (3,):
                     continue
-                y_min = min(y_min, float(point[1]))
-                y_max = max(y_max, float(point[1]))
-                z_min = min(z_min, float(point[2]))
-                z_max = max(z_max, float(point[2]))
+                geometry_points.append(point[np.newaxis, :])
+
+            if not geometry_points:
+                continue
+
+            stacked_points = np.vstack(geometry_points)
+            side_points = _map_points_to_side_view(stacked_points)
+            if side_points.shape[0] == 0:
+                continue
+            y_min = min(y_min, float(np.min(side_points[:, 0])))
+            y_max = max(y_max, float(np.max(side_points[:, 0])))
+            z_min = min(z_min, float(np.min(side_points[:, 1])))
+            z_max = max(z_max, float(np.max(side_points[:, 1])))
 
     if not np.isfinite(y_min) or not np.isfinite(y_max) or not np.isfinite(z_min) or not np.isfinite(z_max):
         return None
     return y_min, y_max, z_min, z_max
 
 
-def configure_side_view_axes(ax, all_profiles, manipulator_states_by_mode=None):
+def _collect_side_points_bounds(sampled_points_by_mode):
+    if not sampled_points_by_mode:
+        return None
+
+    r_max = 0.0
+    z_min = np.inf
+    z_max = -np.inf
+    for side_points in sampled_points_by_mode.values():
+        if side_points is None:
+            continue
+        side_points = np.asarray(side_points, dtype=float)
+        if side_points.ndim != 2 or side_points.shape[0] == 0 or side_points.shape[1] != 2:
+            continue
+        r_max = max(r_max, float(np.max(np.abs(side_points[:, 0]))))
+        z_min = min(z_min, float(np.min(side_points[:, 1])))
+        z_max = max(z_max, float(np.max(side_points[:, 1])))
+
+    if r_max <= 0.0 or not np.isfinite(z_min) or not np.isfinite(z_max):
+        return None
+    return r_max, z_min, z_max
+
+
+def configure_side_view_axes(ax, all_profiles, manipulator_states_by_mode=None, sampled_points_by_mode=None):
     outer_max = 0.0
     z_min = np.inf
     z_max = -np.inf
@@ -2150,6 +2926,13 @@ def configure_side_view_axes(ax, all_profiles, manipulator_states_by_mode=None):
         outer_max = max(outer_max, abs(y_min_manip), abs(y_max_manip))
         z_min = min(z_min, z_min_manip)
         z_max = max(z_max, z_max_manip)
+
+    points_bounds = _collect_side_points_bounds(sampled_points_by_mode)
+    if points_bounds is not None:
+        points_r_max, z_min_pts, z_max_pts = points_bounds
+        outer_max = max(outer_max, points_r_max)
+        z_min = min(z_min, z_min_pts)
+        z_max = max(z_max, z_max_pts)
 
     if outer_max <= 0.0 or not np.isfinite(z_min) or not np.isfinite(z_max):
         return
@@ -2241,6 +3024,23 @@ def _apply_mode_state(csm, state):
     )
 
 
+def _mode_has_distinct_configuration(csm, mode, tol=1e-9):
+    if mode == 1:
+        return float(csm.L_20) > tol
+    if mode == 2:
+        return float(csm.L_r0) > tol and float(csm.L_20) > tol
+    if mode == 3:
+        return float(csm.L_10) > tol and float(csm.L_r0) > tol and float(csm.L_20) > tol
+    if mode == 4:
+        return (
+            float(csm.L_s0) > tol
+            and float(csm.L_10) > tol
+            and float(csm.L_r0) > tol
+            and float(csm.L_20) > tol
+        )
+    return False
+
+
 def _sample_manipulator_states():
     if not SHOW_MANIPULATOR:
         return {}
@@ -2252,6 +3052,8 @@ def _sample_manipulator_states():
         if mode == 0:
             state_list = []
             for source_mode in COMBINED_SOURCE_MODES:
+                if not _mode_has_distinct_configuration(csm, source_mode):
+                    continue
                 state_list.append(_sample_random_mode_state(csm, source_mode, rng))
             sampled_states[0] = state_list
             continue
@@ -2275,6 +3077,80 @@ def _overlay_manipulators(ax, manipulator_states):
             configure_axes=False,
             title=None,
         )
+        for artist in list(ax.lines) + list(ax.collections):
+            try:
+                artist.set_zorder(10)
+            except Exception:
+                pass
+
+
+def _overlay_manipulators_main_pseudo(ax, manipulator_states, proj_matrix):
+    if not SHOW_MANIPULATOR or ax is None:
+        return
+
+    overlay_csm = CSM.from_config(CONFIG_PATH)
+    segment_colors = {
+        "seg1": "#d97706",
+        "seg2": "#1d4ed8",
+        "rigid": "#4b5563",
+        "base": "#4b5563",
+    }
+
+    for state in manipulator_states:
+        _apply_mode_state(overlay_csm, state)
+        geometry = overlay_csm.get_visualization_segments()
+
+        merged_centerline = []
+        for seg_idx, segment in enumerate(geometry.get("segments", [])):
+            points = np.asarray(segment.get("points"), dtype=float)
+            if points.ndim != 2 or points.shape[0] == 0 or points.shape[1] != 3:
+                continue
+            if seg_idx > 0:
+                points = points[1:]
+            merged_centerline.append(points)
+
+            projected, _depth = _project_points_to_pseudo_view(points, proj_matrix)
+            if projected.shape[0] < 2:
+                continue
+
+            color = segment_colors.get(segment.get("label"), "#4b5563")
+            ax.plot(
+                projected[:, 0],
+                projected[:, 1],
+                color=color,
+                linewidth=2.4,
+                alpha=0.95,
+                zorder=8,
+            )
+
+        if merged_centerline:
+            merged = np.vstack(merged_centerline)
+            projected, _depth = _project_points_to_pseudo_view(merged, proj_matrix)
+            if projected.shape[0] >= 2:
+                ax.plot(
+                    projected[:, 0],
+                    projected[:, 1],
+                    color="#1f2937",
+                    linewidth=1.1,
+                    linestyle="--",
+                    alpha=0.82,
+                    zorder=9,
+                )
+
+        tool = geometry.get("tool", {})
+        tool_start = np.asarray(tool.get("start"), dtype=float) if "start" in tool else None
+        tool_end = np.asarray(tool.get("end"), dtype=float) if "end" in tool else None
+        if tool_start is not None and tool_end is not None and tool_start.shape == (3,) and tool_end.shape == (3,):
+            projected, _depth = _project_points_to_pseudo_view(np.vstack((tool_start, tool_end)), proj_matrix)
+            if projected.shape[0] == 2:
+                ax.plot(
+                    projected[:, 0],
+                    projected[:, 1],
+                    color="#0f766e",
+                    linewidth=2.0,
+                    alpha=0.95,
+                    zorder=10,
+                )
 
 
 def _overlay_manipulators_side_view(ax, manipulator_states):
@@ -2292,6 +3168,18 @@ def _overlay_manipulators_side_view(ax, manipulator_states):
     for state in manipulator_states:
         _apply_mode_state(overlay_csm, state)
         geometry = overlay_csm.get_visualization_segments()
+        geometry_points = []
+        for segment in geometry.get("segments", []):
+            points = np.asarray(segment.get("points"), dtype=float)
+            if points.ndim == 2 and points.shape[0] > 0 and points.shape[1] == 3:
+                geometry_points.append(points)
+        tool = geometry.get("tool", {})
+        for key in ("start", "end"):
+            point = np.asarray(tool.get(key), dtype=float) if key in tool else None
+            if point is not None and point.shape == (3,):
+                geometry_points.append(point[np.newaxis, :])
+
+        reference_angle = _resolve_side_view_reference_angle(np.vstack(geometry_points)) if geometry_points else 0.0
 
         merged_centerline = []
         for seg_idx, segment in enumerate(geometry["segments"]):
@@ -2301,11 +3189,14 @@ def _overlay_manipulators_side_view(ax, manipulator_states):
             if seg_idx > 0:
                 points = points[1:]
             merged_centerline.append(points)
+            side_points = _map_points_to_side_view(points, reference_angle=reference_angle)
+            if side_points.shape[0] < 2:
+                continue
 
             color = segment_colors.get(segment["label"], "#4b5563")
             ax.plot(
-                points[:, 1],
-                points[:, 2],
+                side_points[:, 0],
+                side_points[:, 1],
                 color=color,
                 linewidth=2.4,
                 alpha=0.92,
@@ -2314,9 +3205,10 @@ def _overlay_manipulators_side_view(ax, manipulator_states):
 
         if merged_centerline:
             merged = np.vstack(merged_centerline)
+            side_points = _map_points_to_side_view(merged, reference_angle=reference_angle)
             ax.plot(
-                merged[:, 1],
-                merged[:, 2],
+                side_points[:, 0],
+                side_points[:, 1],
                 color="#1f2937",
                 linewidth=1.1,
                 linestyle="--",
@@ -2328,9 +3220,13 @@ def _overlay_manipulators_side_view(ax, manipulator_states):
         tool_start = np.asarray(tool.get("start"), dtype=float) if "start" in tool else None
         tool_end = np.asarray(tool.get("end"), dtype=float) if "end" in tool else None
         if tool_start is not None and tool_end is not None and tool_start.size == 3 and tool_end.size == 3:
+            side_points = _map_points_to_side_view(
+                np.vstack((tool_start, tool_end)),
+                reference_angle=reference_angle,
+            )
             ax.plot(
-                [tool_start[1], tool_end[1]],
-                [tool_start[2], tool_end[2]],
+                side_points[:, 0],
+                side_points[:, 1],
                 color="#0f766e",
                 linewidth=2.0,
                 alpha=0.92,
@@ -2351,7 +3247,7 @@ def generate_profiles():
                 sampled_points[source_mode] = side_points
                 if side_points is not None and side_points.size > 0:
                     combined_points.append(np.asarray(side_points, dtype=float))
-                    source_profile = build_profile_from_side_points(side_points, mode=source_mode)
+                    source_profile = build_profile_from_side_points(side_points, mode=source_mode, csm=csm)
                     if source_profile is not None:
                         source_profiles[source_mode] = source_profile
 
@@ -2371,7 +3267,7 @@ def generate_profiles():
 
         side_points = _load_or_sample_mode_points(csm, mode)
         sampled_points[mode] = side_points
-        profile = build_profile_from_side_points(side_points, mode=mode)
+        profile = build_profile_from_side_points(side_points, mode=mode, csm=csm)
         if profile is None:
             print(f"Mode {mode}: failed to build profile")
             continue
@@ -2387,16 +3283,29 @@ def main():
 
     if SEPARATE_PLOTS:
         fig = plt.figure(figsize=FIGSIZE)
-        axes = [fig.add_subplot(2, 2, i + 1, projection="3d") for i in range(max(4, len(PLOT_MODES)))]
+        pseudo_proj_matrix = None
+        if MAIN_VIEW_STYLE == "pseudo_3d":
+            pseudo_proj_matrix = _pseudo_projection_matrix(list(profiles.values()), manipulator_states)
+        axes = []
+        for i in range(max(4, len(PLOT_MODES))):
+            if MAIN_VIEW_STYLE == "pseudo_3d":
+                axes.append(fig.add_subplot(2, 2, i + 1))
+            else:
+                axes.append(fig.add_subplot(2, 2, i + 1, projection="3d"))
         all_profiles = list(profiles.values())
         for mode, ax in zip(PLOT_MODES, axes):
             if mode not in profiles:
                 ax.set_axis_off()
                 continue
-            draw_mode_workspace(ax, profiles[mode], mode, style=MAIN_VIEW_STYLE)
-            _overlay_manipulators(ax, manipulator_states.get(mode, []))
+            if MAIN_VIEW_STYLE == "pseudo_3d":
+                draw_mode_main_pseudo(ax, profiles[mode], mode, pseudo_proj_matrix)
+                _overlay_manipulators_main_pseudo(ax, manipulator_states.get(mode, []), pseudo_proj_matrix)
+                configure_pseudo_main_axes(ax, all_profiles, manipulator_states, proj_matrix=pseudo_proj_matrix)
+            else:
+                draw_mode_workspace(ax, profiles[mode], mode, style=MAIN_VIEW_STYLE)
+                _overlay_manipulators(ax, manipulator_states.get(mode, []))
+                configure_axes(ax, all_profiles, style=MAIN_VIEW_STYLE, role="main")
             ax.set_title(_display_label_for_mode(mode))
-            configure_axes(ax, all_profiles, style=MAIN_VIEW_STYLE, role="main")
         for ax in axes[len(PLOT_MODES):]:
             ax.set_axis_off()
         plt.tight_layout()
@@ -2404,14 +3313,20 @@ def main():
         if SHOW_SIDE_VIEW or SHOW_SAMPLE_SCATTER:
             fig = plt.figure(figsize=(11.5, 7.2))
             grid = GridSpec(2, 2, width_ratios=[1.45, 1.0], height_ratios=[1.0, 1.0], figure=fig)
-            ax = fig.add_subplot(grid[:, 0], projection="3d")
+            if MAIN_VIEW_STYLE == "pseudo_3d":
+                ax = fig.add_subplot(grid[:, 0])
+            else:
+                ax = fig.add_subplot(grid[:, 0], projection="3d")
             side_ax = None
             if SHOW_SIDE_VIEW:
                 side_ax = fig.add_subplot(grid[0, 1], projection="3d" if SIDE_VIEW_STYLE == "real_3d" else None)
             scatter_ax = fig.add_subplot(grid[1, 1]) if SHOW_SAMPLE_SCATTER else None
         else:
             fig = plt.figure(figsize=(7, 7))
-            ax = fig.add_subplot(111, projection="3d")
+            if MAIN_VIEW_STYLE == "pseudo_3d":
+                ax = fig.add_subplot(111)
+            else:
+                ax = fig.add_subplot(111, projection="3d")
             side_ax = None
             scatter_ax = None
         all_profiles = list(profiles.values())
@@ -2421,13 +3336,19 @@ def main():
                 scatter_modes.extend([source_mode for source_mode in COMBINED_SOURCE_MODES if source_mode in sampled_points])
             elif mode in sampled_points:
                 scatter_modes.append(mode)
-        scatter_modes = list(dict.fromkeys(scatter_modes))
-
+            scatter_modes = list(dict.fromkeys(scatter_modes))
+        pseudo_proj_matrix = None
+        if MAIN_VIEW_STYLE == "pseudo_3d":
+            pseudo_proj_matrix = _pseudo_projection_matrix(all_profiles, manipulator_states)
         for mode in PLOT_MODES:
             if mode not in profiles:
                 continue
-            draw_mode_workspace(ax, profiles[mode], mode, style=MAIN_VIEW_STYLE)
-            _overlay_manipulators(ax, manipulator_states.get(mode, []))
+            if MAIN_VIEW_STYLE == "pseudo_3d":
+                draw_mode_main_pseudo(ax, profiles[mode], mode, pseudo_proj_matrix)
+                _overlay_manipulators_main_pseudo(ax, manipulator_states.get(mode, []), pseudo_proj_matrix)
+            else:
+                draw_mode_workspace(ax, profiles[mode], mode, style=MAIN_VIEW_STYLE)
+                _overlay_manipulators(ax, manipulator_states.get(mode, []))
             if side_ax is not None:
                 if SIDE_VIEW_STYLE == "pseudo_3d":
                     draw_mode_side_view(side_ax, profiles[mode], mode)
@@ -2441,15 +3362,19 @@ def main():
             for mode in PLOT_MODES:
                 if mode in profiles:
                     overlay_profile_curves(scatter_ax, profiles[mode], mode)
-        configure_axes(ax, all_profiles, style=MAIN_VIEW_STYLE, role="main")
+        if MAIN_VIEW_STYLE == "pseudo_3d":
+            configure_pseudo_main_axes(ax, all_profiles, manipulator_states, proj_matrix=pseudo_proj_matrix)
+        else:
+            configure_axes(ax, all_profiles, style=MAIN_VIEW_STYLE, role="main")
         if side_ax is not None:
             if SIDE_VIEW_STYLE == "pseudo_3d":
-                configure_side_view_axes(side_ax, all_profiles, manipulator_states)
+                configure_side_view_axes(side_ax, all_profiles, manipulator_states, sampled_points)
             else:
                 configure_axes(side_ax, all_profiles, style=SIDE_VIEW_STYLE, role="side")
             side_ax.set_title("Side View")
         if scatter_ax is not None:
-            configure_side_view_axes(scatter_ax, all_profiles, manipulator_states)
+            scatter_input_points = {mode: sampled_points[mode] for mode in scatter_modes if mode in sampled_points}
+            configure_side_view_axes(scatter_ax, all_profiles, manipulator_states, scatter_input_points)
             scatter_ax.set_title("Sample Scatter")
         handles, labels = ax.get_legend_handles_labels()
         if handles:

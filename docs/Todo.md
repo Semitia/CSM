@@ -42,18 +42,20 @@ plot_workspace_2 添加arm可视化
 - [x] mode1 内轮廓
 plot_workspace_2 现在是mode2，3，4都有内轮廓/内部不可达域的绘制的，但是mode1没有。我现在想了一下还是应该有。思路和其他mode类似，也是一个凸包包裹了translation workspace，凸包减去translation workspace就是这个不可达区域。两张图片，一个是目前效果，一个是我想要的效果（我先用手画的，你应该能理解我的意思？）
 - [ ] 还有bug
-第一张图是3mm配置，第二张是6mm，我换了一个配置文件，mode 1 的绘制就出问题了
+第一张图是3mm配置，第二张是6mm，我换了一个配置文件，mode 1 的绘制就出问题了。其实mode1它就是两个圆弧啊，这两个配置无非就是长度和最大弯曲角稍微有点不一样罢了。我甚至都能直接算出来这个曲线的解析表达式......
+
+- [x] 3.4mm
+- [ ] 6mm
 
 - [ ] 
-3.4mm,6mm
-
-- [ ] 
-主要分两个view，一个是main，斜视；另一个是side，侧视图。现在main的real_3d和side的pseudo_3d没啥问题。但是main的pesu和side的real有问题。
-补充一下关于pesudo_3d，可参考assets/image_article.png，大致就是说不是透明立体图，像是被压扁在平面的图，没有立体感的，也没有半透明效果（你把绿色棕色的区域和上面的淡蓝色方盒比较一下就能看出来），但是他就是能让内部的不可见区域的图层在上面。而且是斜视的视角，不是普通的某个坐标轴方向的正视，像是“三渲二”，我不知道这样形容是否合适。arm的图层应该在最上面，translation space应该图层在最下面。unreachable的在中间？
-
+主要分两个view，一个是main，斜视；另一个是side，侧视图。现在main的real_3d和side的pseudo_3d没啥问题。
+现在main的pesu有问题
+补充一下关于pesudo_3d，可参考assets/image_article.png，大致就是说不是透明立体图，像是被压扁在平面的图，没有立体感的，也没有半透明效果（你把绿色棕色的区域和上面的淡蓝色方盒比较一下就能看出来），但是他就是能让内部的不可见区域的图层在上面。而且是斜视的视角，不是普通的某个坐标轴方向的正视，像是“三渲二”，就是把目标投影到当前视角平面。我不知道这样形容是否合适。arm的图层应该在最上面，translation space应该图层在最下面。unreachable的在中间？
+但是main的pesu和side的real有问题。
 
 - [x] side view arm
-plot_workspace_2现在在绘制每个mode的时候顺便采样一个对应mode的配置，然后画一个机械臂上去。但是现在只在main view画了，我希望side view也有
+plot_workspace_2 现在在绘制每个mode的时候顺便采样一个对应mode的配置，然后画一个机械臂上去。但是现在只在main view画了，我希望side view也有
+- [ ]有问题
 - [ ] detailed
 
 - [x]
