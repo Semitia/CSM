@@ -4,7 +4,6 @@ Description: Core CSM (Continuum Sugery Manipulator) model class defining kinema
 """
 import numpy as np
 import matplotlib.pyplot as plt
-from .line_generator import LineGenerator
 from .utils import calculate_angular_velocity, skew_symmetric_matrix, damped_pseudo_inverse
 
 
@@ -173,6 +172,101 @@ class CSM:
                          [0,  0, 1, 0],
                          [0,  0, 0, 1]])
 
+    def _sample_constant_curvature(self, T_start, theta, length, delta, num_points):
+        points = np.zeros((num_points, 3), dtype=float)
+        rotations = np.zeros((num_points, 3, 3), dtype=float)
+        if num_points == 1:
+            s_vals = np.array([length], dtype=float)
+        else:
+            s_vals = np.linspace(0.0, length, num_points)
+        if length <= 0:
+            points[:] = T_start[:3, 3]
+            rotations[:] = T_start[:3, :3]
+            return points, rotations
+
+        for i, s in enumerate(s_vals):
+            theta_s = theta * (s / length)
+            T_local = self.get_trans_mat(theta_s, s, delta)
+            T_world = T_start @ T_local
+            points[i] = T_world[:3, 3]
+            rotations[i] = T_world[:3, :3]
+        return points, rotations
+
+    def _sample_straight_segment(self, T_start, length, num_points):
+        points = np.zeros((num_points, 3), dtype=float)
+        rotations = np.repeat(T_start[:3, :3][None, :, :], num_points, axis=0)
+        if num_points == 1:
+            s_vals = np.array([length], dtype=float)
+        else:
+            s_vals = np.linspace(0.0, length, num_points)
+        for i, s in enumerate(s_vals):
+            T_world = T_start.copy()
+            T_world[:3, 3] = T_start[:3, 3] + T_start[:3, :3] @ np.array([0.0, 0.0, s])
+            points[i] = T_world[:3, 3]
+        return points, rotations
+
+    def get_visualization_segments(self, arc_points=25, straight_points=8):
+        T = self.get_w_T()
+        segments = []
+
+        def append_segment(kind, length, theta=0.0, delta=0.0, label=""):
+            nonlocal T
+            if length < 0:
+                length = 0.0
+            T_start = T.copy()
+            if kind == "arc":
+                points, rotations = self._sample_constant_curvature(
+                    T_start, theta, length, delta, max(2, arc_points)
+                )
+                T = T_start @ self.get_trans_mat(theta, length, delta)
+            else:
+                points, rotations = self._sample_straight_segment(
+                    T_start, length, max(2, straight_points)
+                )
+                T = T_start.copy()
+                T[:3, 3] = T_start[:3, 3] + T_start[:3, :3] @ np.array([0.0, 0.0, length])
+            segments.append({
+                "kind": kind,
+                "label": label,
+                "length": length,
+                "theta": theta,
+                "delta": delta,
+                "points": points,
+                "rotations": rotations,
+                "T_start": T_start,
+                "T_end": T.copy(),
+            })
+
+        if self.mode == 1:
+            append_segment("arc", self.L2, self.theta_2, self.delta_2, "seg2")
+        elif self.mode == 2:
+            append_segment("straight", self.Lr, label="rigid")
+            append_segment("arc", self.L2, self.theta_2, self.delta_2, "seg2")
+        elif self.mode == 3:
+            append_segment("arc", self.L1, self.theta_1, self.delta_1, "seg1")
+            append_segment("straight", self.Lr, label="rigid")
+            append_segment("arc", self.L2, self.theta_2, self.delta_2, "seg2")
+        elif self.mode == 4:
+            append_segment("straight", self.Ls, label="base")
+            append_segment("arc", self.L1, self.theta_1, self.delta_1, "seg1")
+            append_segment("straight", self.Lr, label="rigid")
+            append_segment("arc", self.L2, self.theta_2, self.delta_2, "seg2")
+
+        tool_start = T.copy()
+        tool_end = tool_start.copy()
+        tool_end[:3, 3] = tool_start[:3, 3] + tool_start[:3, :3] @ np.array([0.0, 0.0, self.L_tool])
+        return {
+            "segments": segments,
+            "tool": {
+                "length": self.L_tool,
+                "T_start": tool_start,
+                "T_end": tool_end,
+                "start": tool_start[:3, 3].copy(),
+                "end": tool_end[:3, 3].copy(),
+                "rotation": tool_start[:3, :3].copy(),
+            }
+        }
+
     def get_dot_PHI(self, v, w):
         Jv = self._mode_J[self.mode]["v"]
         Jw = self._mode_J[self.mode]["w"]
@@ -287,33 +381,12 @@ class CSM:
         self.last_pose = self.pose
         print(f"mode {self.mode} , pre_omega: [{', '.join([f'{x:.3f}' for x in self.pre_delta_ori])}] , omega: [{', '.join([f'{x:.3f}' for x in delta_ori])}]", "d_PHI: ", self.d_PHI * self.delta_t)
 
-    def plot_manipulator(self, ax, reverse_color=False):
-        init_pos = np.array([0, 0, 0, 1])
-        init_ori = np.array([0, 0, 1])
-        if not reverse_color:
-            ax.clear()
+    def plot_manipulator(self, ax, reverse_color=False, render_mode="detailed"):
+        from .visualizer import Visualizer
 
-        lg = LineGenerator()
-        if self.mode == 1:
-            lg.add_arc(init_pos[:3], self.end2_pos[:3], init_ori, self.end2_ori)
-        elif self.mode == 2:
-            lg.add_line(init_pos[:3], self.base2_pos[:3])
-            lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
-        elif self.mode == 3:
-            lg.add_arc(init_pos[:3], self.end1_pos[:3], init_ori, self.end1_ori)
-            lg.add_line(self.end1_pos[:3], self.base2_pos[:3])
-            lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
-        elif self.mode == 4:
-            lg.add_line(init_pos[:3], self.base1_pos[:3])
-            lg.add_arc(self.base1_pos[:3], self.end1_pos[:3], self.base1_ori, self.end1_ori)
-            lg.add_line(self.end1_pos[:3], self.base2_pos[:3])
-            lg.add_arc(self.base2_pos[:3], self.end2_pos[:3], self.base2_ori, self.end2_ori)
-
-        # 绘制末端工具直线
-        if self.L_tool > 0:
-            lg.add_line(self.end2_pos[:3], self.tool_pos)
-
-        lg.draw(ax, reverse_color=reverse_color)
+        if not hasattr(self, "_visualizer"):
+            self._visualizer = Visualizer(default_render_mode=render_mode)
+        self._visualizer.plot(self, ax, reverse_color=reverse_color, render_mode=render_mode)
         
         total_length = self.L_10 + self.L_20 + self.L_r0 + self.L_s0 + self.L_tool
         total_weight = total_length - self.L_s0

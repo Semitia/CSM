@@ -57,9 +57,9 @@ pip install -e .
 from csm import CSM
 import numpy as np
 
-csm = CSM.from_config("config/csm_config.yaml")
+csm = CSM.from_config("config/csm_cfg_3.4mm.yaml")
 # 或直接传参
-csm = CSM(L_10=0.04, L_20=0.06, L_r0=0.02, L_s0=0.15)
+csm = CSM(L_10=0.04, L_20=0.06, L_r0=0.02, L_s0=0.15, L_tool=0.01)
 ```
 
 ## 运行脚本
@@ -67,17 +67,65 @@ csm = CSM(L_10=0.04, L_20=0.06, L_r0=0.02, L_s0=0.15)
 所有脚本在项目根目录下执行：
 
 ```bash
+conda activate csm
+
 # 生成工作空间数据（需先运行）
-python scripts/gen_workspace.py
+python3 scripts/gen_workspace.py
 
 # 实时动画演示
-python scripts/display.py
+python3 scripts/display.py
 
 # 单段轨迹演示
-python scripts/run_traj.py
+python3 scripts/run_traj.py
 
 # 批量实验
-python scripts/run_experiment.py
+python3 scripts/run_experiment.py
+```
+
+## 机械臂可视化
+
+`CSM.plot_manipulator()` 现在支持两种可视化风格，通过 `render_mode` 参数控制：
+
+- `render_mode="simple"`：原来的简洁画法，只显示中心线和工具线，适合快速调试。
+- `render_mode="detailed"`：增强画法，显示 backbone、圆周排列驱动丝、沿弧分布的间隔盘和末端工具。
+
+示例：
+
+```python
+import matplotlib.pyplot as plt
+from csm import CSM
+
+csm = CSM.from_config("config/csm_cfg_3.4mm.yaml")
+csm.target_pose = csm.pose.copy()
+
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection="3d")
+
+# 原始简洁风格
+csm.plot_manipulator(ax, render_mode="simple")
+
+# 或增强结构化风格
+# csm.plot_manipulator(ax, render_mode="detailed")
+
+plt.show()
+```
+
+在动画脚本里也一样，例如在 [`scripts/display.py`](/home/winslow/RII/CSM/scripts/display.py) 中，把：
+
+```python
+csm.plot_manipulator(ax)
+```
+
+改成：
+
+```python
+csm.plot_manipulator(ax, render_mode="simple")
+```
+
+或：
+
+```python
+csm.plot_manipulator(ax, render_mode="detailed")
 ```
 
 ## 工作空间生成与绘制
@@ -146,7 +194,7 @@ python3 scripts/plot_workspace.py
 
 ## 配置文件
 
-[`config/csm_config.yaml`](config/csm_config.yaml) 包含机器人物理参数与控制参数：
+[`config/csm_cfg_3.4mm.yaml`](/home/winslow/RII/CSM/config/csm_cfg_3.4mm.yaml) 包含机器人物理参数与控制参数，例如：
 
 ```yaml
 robot:

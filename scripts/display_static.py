@@ -64,7 +64,8 @@ if __name__ == "__main__":
         csm.target_pose = csm.pose
         
         # 绘制
-        csm.plot_manipulator(ax)
+        # csm.plot_manipulator(ax)
+        csm.plot_manipulator(ax, render_mode="detailed")
         ax.set_title(f"Mode {mode} (Random Config)")
         
         # 设置坐标轴比例一致，方便观察
