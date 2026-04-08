@@ -8,6 +8,7 @@ Current status:
 - mode 0 reserved in the framework
 """
 from dataclasses import dataclass
+import math
 import os
 from pathlib import Path
 
@@ -17,9 +18,9 @@ import numpy as np
 from csm import CSM
 
 
-CONFIG_NAME = "csm_cfg_0_tool.yaml"
+CONFIG_NAME = "csm_cfg_3mm.yaml"
 CONFIG_PATH = Path("./config") / CONFIG_NAME
-PLOT_MODES = [3, 4]
+PLOT_MODES = [0]
 
 FIGSIZE = None
 REVOLVE_SAMPLES = 30
@@ -38,6 +39,10 @@ UNREACHABLE_ALPHA = 0.40
 OUTPUT_PATH = Path("./data/plot_workspace_boundary_scan.png")
 DEBUG_OUTPUT_DIR = Path("./data/plot_workspace_boundary_scan_debug")
 SHOW_FIGURE = True
+MODE0_NODE_MERGE_TOL = 2.0e-4
+MODE0_ENDPOINT_SNAP_TOL = 3.0e-4
+MODE0_ROUTE_LENGTH_SAMPLES = 72
+MODE0_ROUTE_ANGLE_SAMPLES = 72
 
 
 def _has_interactive_display():
@@ -137,6 +142,29 @@ def _segment_intersection(p0, p1, q0, q1, eps=1e-9):
     return None
 
 
+def _project_point_to_segment(point, seg_start, seg_end, eps=1e-12):
+    point = np.asarray(point, dtype=float)
+    seg_start = np.asarray(seg_start, dtype=float)
+    seg_end = np.asarray(seg_end, dtype=float)
+    vec = seg_end - seg_start
+    denom = float(np.dot(vec, vec))
+    if denom <= eps:
+        return 0.0, seg_start.copy(), float(np.linalg.norm(point - seg_start))
+    t = float(np.clip(np.dot(point - seg_start, vec) / denom, 0.0, 1.0))
+    proj = seg_start + t * vec
+    dist = float(np.linalg.norm(point - proj))
+    return t, proj, dist
+
+
+def _boxes_overlap(min_a, max_a, min_b, max_b, pad=0.0):
+    return not (
+        max_a[0] < min_b[0] - pad or
+        max_b[0] < min_a[0] - pad or
+        max_a[1] < min_b[1] - pad or
+        max_b[1] < min_a[1] - pad
+    )
+
+
 def _first_polyline_intersection(curve_a, curve_b):
     curve_a = np.asarray(curve_a, dtype=float)
     curve_b = np.asarray(curve_b, dtype=float)
@@ -216,6 +244,400 @@ def _concat_curve_segments(segments):
     if not cleaned:
         return np.empty((0, 2), dtype=float)
     return np.vstack(cleaned)
+
+
+def _extend_curve_outer_endpoint_downward(curve_rz, min_z):
+    curve_rz = np.asarray(curve_rz, dtype=float)
+    if curve_rz.ndim != 2 or curve_rz.shape[0] == 0:
+        return curve_rz
+
+    start_point = curve_rz[0].copy()
+    end_point = curve_rz[-1].copy()
+    extend_start = start_point[0] >= end_point[0]
+    outer_point = start_point if extend_start else end_point
+    target_z = float(min_z)
+    if outer_point[1] <= target_z + 1e-9:
+        return curve_rz
+
+    extended_point = np.asarray([outer_point[0], target_z], dtype=float)
+    if extend_start:
+        if curve_rz.shape[0] >= 2 and np.allclose(curve_rz[1], extended_point, atol=1e-9):
+            return curve_rz[1:].copy()
+        return np.vstack((extended_point, curve_rz))
+
+    if curve_rz.shape[0] >= 2 and np.allclose(curve_rz[-2], extended_point, atol=1e-9):
+        return curve_rz[:-1].copy()
+    return np.vstack((curve_rz, extended_point))
+
+
+def _curve_progress_point(curve, progress):
+    curve = np.asarray(curve, dtype=float)
+    if curve.shape[0] == 0:
+        return np.zeros(2, dtype=float)
+    progress = float(np.clip(progress, 0.0, max(curve.shape[0] - 1, 0)))
+    idx = int(np.floor(progress))
+    frac = progress - idx
+    if frac <= 1e-12 or idx >= curve.shape[0] - 1:
+        return curve[min(idx, curve.shape[0] - 1)].copy()
+    return curve[idx] + frac * (curve[idx + 1] - curve[idx])
+
+
+def _extract_subcurve_by_progress(curve, progress_start, progress_end):
+    curve = np.asarray(curve, dtype=float)
+    start = float(progress_start)
+    end = float(progress_end)
+    if end < start:
+        return _extract_subcurve_by_progress(curve, end, start)[::-1].copy()
+
+    start_point = _curve_progress_point(curve, start)
+    end_point = _curve_progress_point(curve, end)
+    start_idx = int(np.floor(start))
+    end_idx = int(np.floor(end))
+
+    points = [start_point]
+    for idx in range(start_idx + 1, end_idx + 1):
+        if idx < curve.shape[0]:
+            points.append(curve[idx].copy())
+    if not np.allclose(points[-1], end_point, atol=1e-9):
+        points.append(end_point)
+    else:
+        points[-1] = end_point
+    return np.asarray(points, dtype=float)
+
+
+def _dedupe_progress_points(items, tol=1e-9):
+    if not items:
+        return []
+
+    items = sorted(items, key=lambda item: item[0])
+    deduped = [items[0]]
+    for progress, point in items[1:]:
+        prev_progress, prev_point = deduped[-1]
+        if abs(progress - prev_progress) <= tol:
+            merged_point = 0.5 * (np.asarray(prev_point, dtype=float) + np.asarray(point, dtype=float))
+            deduped[-1] = (0.5 * (prev_progress + progress), merged_point)
+        else:
+            deduped.append((progress, np.asarray(point, dtype=float)))
+    return deduped
+
+
+def _cluster_points_with_tolerance(points, tol):
+    clusters = []
+    for point in points:
+        point = np.asarray(point, dtype=float)
+        assigned = False
+        for cluster in clusters:
+            if np.linalg.norm(point - cluster["center"]) <= tol:
+                cluster["points"].append(point)
+                cluster["center"] = np.mean(cluster["points"], axis=0)
+                assigned = True
+                break
+        if not assigned:
+            clusters.append({"center": point.copy(), "points": [point.copy()]})
+    return [cluster["center"].copy() for cluster in clusters]
+
+
+def _split_curve_at_intersections(curves, endpoint_snap_tol=MODE0_ENDPOINT_SNAP_TOL):
+    split_points = []
+    curve_boxes = []
+    for curve in curves:
+        curve_points = np.asarray(curve["points"], dtype=float)
+        points = [(float(idx), np.asarray(point, dtype=float)) for idx, point in enumerate(curve_points)]
+        split_points.append(points)
+        if curve_points.shape[0] == 0:
+            curve_boxes.append(None)
+        else:
+            curve_boxes.append((np.min(curve_points, axis=0), np.max(curve_points, axis=0)))
+
+    for idx_a, curve_a in enumerate(curves):
+        points_a = np.asarray(curve_a["points"], dtype=float)
+        if points_a.shape[0] < 2:
+            continue
+        for idx_b in range(idx_a + 1, len(curves)):
+            points_b = np.asarray(curves[idx_b]["points"], dtype=float)
+            if points_b.shape[0] < 2:
+                continue
+            bbox_a = curve_boxes[idx_a]
+            bbox_b = curve_boxes[idx_b]
+            if bbox_a is not None and bbox_b is not None and not _boxes_overlap(bbox_a[0], bbox_a[1], bbox_b[0], bbox_b[1], pad=endpoint_snap_tol):
+                continue
+            for seg_a in range(points_a.shape[0] - 1):
+                seg_a_min = np.minimum(points_a[seg_a], points_a[seg_a + 1])
+                seg_a_max = np.maximum(points_a[seg_a], points_a[seg_a + 1])
+                for seg_b in range(points_b.shape[0] - 1):
+                    seg_b_min = np.minimum(points_b[seg_b], points_b[seg_b + 1])
+                    seg_b_max = np.maximum(points_b[seg_b], points_b[seg_b + 1])
+                    if not _boxes_overlap(seg_a_min, seg_a_max, seg_b_min, seg_b_max, pad=endpoint_snap_tol):
+                        continue
+                    hit = _segment_intersection(
+                        points_a[seg_a],
+                        points_a[seg_a + 1],
+                        points_b[seg_b],
+                        points_b[seg_b + 1],
+                    )
+                    if hit is None:
+                        continue
+                    t_a, t_b, point = hit
+                    split_points[idx_a].append((seg_a + float(t_a), point))
+                    split_points[idx_b].append((seg_b + float(t_b), point))
+
+    for idx_a, curve_a in enumerate(curves):
+        points_a = np.asarray(curve_a["points"], dtype=float)
+        if points_a.shape[0] == 0:
+            continue
+        endpoint_progresses = [0.0, float(points_a.shape[0] - 1)]
+        for endpoint_progress in endpoint_progresses:
+            endpoint = _curve_progress_point(points_a, endpoint_progress)
+            nearby_points = [endpoint]
+            for idx_b, curve_b in enumerate(curves):
+                if idx_a == idx_b:
+                    continue
+                points_b = np.asarray(curve_b["points"], dtype=float)
+                if points_b.shape[0] < 2:
+                    continue
+                bbox_b = curve_boxes[idx_b]
+                if bbox_b is not None:
+                    endpoint_box_min = endpoint - endpoint_snap_tol
+                    endpoint_box_max = endpoint + endpoint_snap_tol
+                    if not _boxes_overlap(endpoint_box_min, endpoint_box_max, bbox_b[0], bbox_b[1], pad=0.0):
+                        continue
+                best = None
+                for seg_b in range(points_b.shape[0] - 1):
+                    seg_b_min = np.minimum(points_b[seg_b], points_b[seg_b + 1])
+                    seg_b_max = np.maximum(points_b[seg_b], points_b[seg_b + 1])
+                    endpoint_box_min = endpoint - endpoint_snap_tol
+                    endpoint_box_max = endpoint + endpoint_snap_tol
+                    if not _boxes_overlap(endpoint_box_min, endpoint_box_max, seg_b_min, seg_b_max, pad=0.0):
+                        continue
+                    t_b, proj, dist = _project_point_to_segment(endpoint, points_b[seg_b], points_b[seg_b + 1])
+                    if dist > endpoint_snap_tol:
+                        continue
+                    candidate = (dist, seg_b + float(t_b), proj)
+                    if best is None or candidate[0] < best[0]:
+                        best = candidate
+                if best is not None:
+                    _, progress_b, proj_b = best
+                    nearby_points.append(proj_b)
+                    split_points[idx_b].append((progress_b, proj_b))
+            snapped_center = np.mean(np.asarray(nearby_points, dtype=float), axis=0)
+            split_points[idx_a].append((endpoint_progress, snapped_center))
+
+    return [_dedupe_progress_points(items) for items in split_points]
+
+
+def _right_turn_angle_deg(vec_in, vec_out):
+    angle_in = math.atan2(float(vec_in[1]), float(vec_in[0]))
+    angle_out = math.atan2(float(vec_out[1]), float(vec_out[0]))
+    return math.degrees((angle_in - angle_out) % (2.0 * math.pi))
+
+
+def _trace_right_turn_path(curves, start_curve_name, target_curve_names, node_merge_tol=MODE0_NODE_MERGE_TOL):
+    if isinstance(target_curve_names, str):
+        target_curve_names = {target_curve_names}
+    else:
+        target_curve_names = set(target_curve_names)
+    split_points = _split_curve_at_intersections(curves)
+
+    node_points = []
+    node_members = []
+
+    def get_node_id(point):
+        point = np.asarray(point, dtype=float)
+        for node_id, center in enumerate(node_points):
+            if np.linalg.norm(point - center) <= node_merge_tol:
+                node_members[node_id].append(point.copy())
+                node_points[node_id] = np.mean(np.asarray(node_members[node_id], dtype=float), axis=0)
+                return node_id
+        node_id = len(node_points)
+        node_points.append(point.copy())
+        node_members.append([point.copy()])
+        return node_id
+
+    adjacency = {}
+    start_curve_nodes = []
+    target_nodes = set()
+
+    for curve_idx, curve in enumerate(curves):
+        progress_items = split_points[curve_idx]
+        for item_idx in range(len(progress_items) - 1):
+            progress_a, point_a = progress_items[item_idx]
+            progress_b, point_b = progress_items[item_idx + 1]
+            if progress_b - progress_a <= 1e-9:
+                continue
+            subcurve = _extract_subcurve_by_progress(curve["points"], progress_a, progress_b)
+            if subcurve.shape[0] < 2:
+                continue
+
+            node_a = get_node_id(subcurve[0])
+            node_b = get_node_id(subcurve[-1])
+            if node_a == node_b:
+                continue
+
+            edge_meta = {
+                "curve_name": curve["name"],
+                "curve_role": curve["role"],
+                "is_target": curve["name"] in target_curve_names,
+            }
+            adjacency.setdefault(node_a, []).append(
+                {
+                    "to": node_b,
+                    "points": subcurve,
+                    "meta": edge_meta,
+                }
+            )
+            adjacency.setdefault(node_b, []).append(
+                {
+                    "to": node_a,
+                    "points": subcurve[::-1].copy(),
+                    "meta": edge_meta,
+                }
+            )
+
+            if curve["name"] == start_curve_name:
+                start_curve_nodes.extend([node_a, node_b])
+            if curve["name"] in target_curve_names:
+                target_nodes.update((node_a, node_b))
+
+    if not start_curve_nodes:
+        raise RuntimeError(f"Unable to locate start curve '{start_curve_name}' in mode0 graph.")
+    if not target_nodes:
+        raise RuntimeError(f"Unable to locate target curve(s) '{sorted(target_curve_names)}' in mode0 graph.")
+
+    start_node = min(set(start_curve_nodes), key=lambda node_id: node_points[node_id][0])
+    start_edges = [
+        edge for edge in adjacency.get(start_node, [])
+        if edge["meta"]["curve_name"] == start_curve_name and edge["points"][-1, 0] > edge["points"][0, 0] + 1e-9
+    ]
+    if not start_edges:
+        start_edges = [edge for edge in adjacency.get(start_node, []) if edge["meta"]["curve_name"] == start_curve_name]
+    if not start_edges:
+        raise RuntimeError("Unable to choose an outward-going edge on the mode1 inner contour for mode0.")
+
+    current_edge = max(start_edges, key=lambda edge: edge["points"][-1, 0] - edge["points"][0, 0])
+    initial_segment = current_edge["points"]
+
+    def _ordered_outgoing(node_id, prev_id, incoming_vec, visited_edges):
+        outgoing = []
+        for edge in adjacency.get(node_id, []):
+            edge_key = (node_id, edge["to"])
+            if edge_key in visited_edges:
+                continue
+            if edge["to"] == prev_id and len(adjacency.get(node_id, [])) > 1:
+                continue
+
+            outgoing_vec = edge["points"][1] - edge["points"][0]
+            turn = _right_turn_angle_deg(incoming_vec, outgoing_vec)
+            if 1e-6 < turn < 180.0 - 1e-6:
+                priority = (0, -turn)
+            elif turn <= 1e-6 or turn >= 360.0 - 1e-6:
+                priority = (1, 0.0)
+            elif abs(turn - 180.0) <= 1e-6:
+                priority = (3, 0.0)
+            else:
+                priority = (2, min(turn - 180.0, 360.0 - turn))
+            outgoing.append((priority, edge))
+        outgoing.sort(key=lambda item: item[0])
+        return [edge for _, edge in outgoing]
+
+    dead_ends = []
+
+    def _search(current_node, prev_node, incoming_vec, visited_edges, path_segments):
+        if current_node in target_nodes:
+            return path_segments
+
+        ordered_edges = _ordered_outgoing(current_node, prev_node, incoming_vec, visited_edges)
+        if not ordered_edges:
+            dead_ends.append(
+                {
+                    "node": int(current_node),
+                    "prev_node": None if prev_node is None else int(prev_node),
+                    "point": node_points[current_node].copy(),
+                    "degree": len(adjacency.get(current_node, [])),
+                }
+            )
+        for edge in ordered_edges:
+            edge_key = (current_node, edge["to"])
+            updated_path = path_segments + [edge["points"]]
+            result = _search(
+                edge["to"],
+                current_node,
+                edge["points"][-1] - edge["points"][-2],
+                visited_edges | {edge_key},
+                updated_path,
+            )
+            if result is not None:
+                return result
+        return None
+
+    path_segments = _search(
+        current_edge["to"],
+        start_node,
+        initial_segment[-1] - initial_segment[-2],
+        {(start_node, current_edge["to"])},
+        [initial_segment],
+    )
+    if path_segments is None:
+        raise RuntimeError("Mode0 path tracing could not reach the outer contour after exploring all right-turn branches.")
+
+    return _concat_curve_segments(path_segments), {
+        "node_points": [point.copy() for point in node_points],
+        "node_degrees": {int(node): len(edges) for node, edges in adjacency.items()},
+        "num_nodes": int(len(node_points)),
+        "num_directed_edges": int(sum(len(edges) for edges in adjacency.values())),
+        "start_node": int(start_node),
+        "target_nodes": sorted(target_nodes),
+        "path_segments": [segment.copy() for segment in path_segments],
+        "dead_ends": dead_ends,
+    }
+
+
+def _collect_mode0_sources(csm, length_samples=240, angle_samples=240):
+    profiles = {
+        1: build_mode1_profile(csm, length_samples=length_samples, angle_samples=angle_samples),
+        2: build_mode2_profile(csm, length_samples=length_samples, angle_samples=angle_samples),
+        3: build_mode3_profile(csm, length_samples=length_samples, angle_samples=angle_samples),
+    }
+    try:
+        profiles[4] = build_mode4_profile(csm, length_samples=length_samples, angle_samples=angle_samples)
+    except Exception:
+        profiles[4] = None
+    return profiles
+
+
+def _write_mode0_debug_report(curves, error_message, report_path):
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"mode0 trace failure: {error_message}", ""]
+    lines.append("curve endpoints (meters):")
+    endpoint_records = []
+    for curve in curves:
+        points = np.asarray(curve["points"], dtype=float)
+        if points.shape[0] == 0:
+            continue
+        start = points[0]
+        end = points[-1]
+        endpoint_records.append((curve["name"], "start", start))
+        endpoint_records.append((curve["name"], "end", end))
+        lines.append(
+            f"- {curve['name']} [{curve['role']}] start=({start[0]:.6f}, {start[1]:.6f}) "
+            f"end=({end[0]:.6f}, {end[1]:.6f})"
+        )
+
+    lines.append("")
+    lines.append("closest endpoint pairs:")
+    pairs = []
+    for idx, (name_a, tag_a, point_a) in enumerate(endpoint_records):
+        for name_b, tag_b, point_b in endpoint_records[idx + 1:]:
+            if name_a == name_b:
+                continue
+            dist = float(np.linalg.norm(point_a - point_b))
+            pairs.append((dist, name_a, tag_a, point_a, name_b, tag_b, point_b))
+    for dist, name_a, tag_a, point_a, name_b, tag_b, point_b in sorted(pairs, key=lambda item: item[0])[:20]:
+        lines.append(
+            f"- {dist*1000.0:.3f} mm: {name_a}.{tag_a} ({point_a[0]:.6f}, {point_a[1]:.6f}) "
+            f"<-> {name_b}.{tag_b} ({point_b[0]:.6f}, {point_b[1]:.6f})"
+        )
+
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _sample_mode1_inner_curve(csm, length_samples=240):
@@ -416,9 +838,9 @@ def build_mode1_profile(csm, length_samples=240, angle_samples=240):
         inner_segments=[inner_curve],
         outer_segments=[outer_curve],
         outer_open_curve_rz=outer_curve,
-        unreachable_open_curves_rz=[],
+        unreachable_open_curves_rz=[inner_curve],
         closed_profile_rz=closed_profile,
-        unreachable_closed_profiles_rz=[],
+        unreachable_closed_profiles_rz=[_close_curve_to_axis(inner_curve)],
         debug_data=None,
     )
 
@@ -582,6 +1004,18 @@ def build_mode3_profile(csm, length_samples=240, angle_samples=240):
 
 def build_mode4_profile(csm, length_samples=240, angle_samples=240):
     theta1_break = min(csm.theta1_limit, 0.5 * np.pi)
+    theta2_pre_curve = _sample_mode4_theta2_curve(
+        csm,
+        Ls=csm.L_s0,
+        theta_1=theta1_break,
+        theta_start=0.0,
+        theta_end=csm.theta2_limit,
+        angle_samples=angle_samples,
+    )
+    theta2_break = 0.0
+    if theta1_break < 0.5 * np.pi - 1e-9 and theta2_pre_curve.shape[0] >= 2:
+        theta2_idx = int(np.argmax(theta2_pre_curve[:, 0]))
+        theta2_break = float(np.linspace(0.0, csm.theta2_limit, angle_samples)[theta2_idx])
 
     primitives = {
         "outer_theta1": BoundaryPrimitive(
@@ -595,12 +1029,16 @@ def build_mode4_profile(csm, length_samples=240, angle_samples=240):
                 angle_samples=angle_samples,
             ),
         ),
+        "outer_theta2_pre": BoundaryPrimitive(
+            "outer_theta2_pre",
+            theta2_pre_curve,
+        ),
         "outer_ls": BoundaryPrimitive(
             "outer_ls",
             _sample_mode4_ls_curve(
                 csm,
                 theta_1=theta1_break,
-                theta_2=0.0,
+                theta_2=theta2_break,
                 ls_start=csm.L_s0,
                 ls_end=0.0,
                 length_samples=length_samples,
@@ -612,35 +1050,24 @@ def build_mode4_profile(csm, length_samples=240, angle_samples=240):
                 csm,
                 Ls=0.0,
                 theta_1=theta1_break,
+                theta_start=theta2_break,
+                theta_end=csm.theta2_limit,
+                angle_samples=angle_samples,
+            ),
+        ),
+        "inner_family_theta2": BoundaryPrimitive(
+            "inner_family_theta2",
+            _sample_mode4_theta2_curve(
+                csm,
+                Ls=0.0,
+                theta_1=theta1_break,
                 theta_start=0.0,
                 theta_end=csm.theta2_limit,
                 angle_samples=angle_samples,
             ),
         ),
-        "inner_base_theta1": BoundaryPrimitive(
-            "inner_base_theta1",
-            _sample_mode3_theta1_curve(
-                csm,
-                L1=csm.L_10,
-                theta1_start=0.0,
-                theta1_end=csm.theta1_limit,
-                theta_2=0.0,
-                angle_samples=angle_samples,
-            ),
-        ),
-        "inner_base_theta2": BoundaryPrimitive(
-            "inner_base_theta2",
-            _sample_mode3_theta2_curve(
-                csm,
-                L1=csm.L_10,
-                theta_1=csm.theta1_limit,
-                theta_start=0.0,
-                theta_end=csm.theta2_limit,
-                angle_samples=angle_samples,
-            ),
-        ),
-        "inner_alt_theta2": BoundaryPrimitive(
-            "inner_alt_theta2",
+        "mode3_inner_theta2": BoundaryPrimitive(
+            "mode3_inner_theta2",
             _sample_mode3_theta2_curve(
                 csm,
                 L1=0.0,
@@ -650,8 +1077,8 @@ def build_mode4_profile(csm, length_samples=240, angle_samples=240):
                 angle_samples=angle_samples,
             ),
         ),
-        "inner_alt_l1": BoundaryPrimitive(
-            "inner_alt_l1",
+        "mode3_inner_l1": BoundaryPrimitive(
+            "mode3_inner_l1",
             _sample_mode3_l1_curve(
                 csm,
                 theta_2=csm.theta2_limit,
@@ -660,8 +1087,8 @@ def build_mode4_profile(csm, length_samples=240, angle_samples=240):
                 length_samples=length_samples,
             ),
         ),
-        "inner_alt_ls": BoundaryPrimitive(
-            "inner_alt_ls",
+        "inner_ls_cover": BoundaryPrimitive(
+            "inner_ls_cover",
             _sample_mode4_ls_curve(
                 csm,
                 theta_1=csm.theta1_limit,
@@ -673,34 +1100,60 @@ def build_mode4_profile(csm, length_samples=240, angle_samples=240):
         ),
     }
 
-    outer_segments = [
-        primitives["outer_theta1"].points_rz,
+    outer_segments = [primitives["outer_theta1"].points_rz]
+    if theta2_break > 1e-9:
+        outer_segments.append(_sample_mode4_theta2_curve(
+            csm,
+            Ls=csm.L_s0,
+            theta_1=theta1_break,
+            theta_start=0.0,
+            theta_end=theta2_break,
+            angle_samples=angle_samples,
+        ))
+    outer_segments.extend([
         primitives["outer_ls"].points_rz,
         primitives["outer_theta2"].points_rz,
-    ]
+    ])
 
-    base_inner_segments = [
-        primitives["inner_base_theta1"].points_rz,
-        primitives["inner_base_theta2"].points_rz,
-    ]
+    base_inner_seg1 = primitives["mode3_inner_theta2"].points_rz
+    base_inner_seg2 = primitives["mode3_inner_l1"].points_rz
+    base_inner_segments = [base_inner_seg1, base_inner_seg2]
 
-    inner_segments = base_inner_segments
-    chosen_inner_mode = "base_mode3_outer"
-    alt_hit = None
-
-    alt_ls_trimmed = primitives["inner_alt_ls"].points_rz[1:].copy()
-    if alt_ls_trimmed.shape[0] >= 2:
-        alt_hit = _first_polyline_intersection(primitives["inner_alt_l1"].points_rz, alt_ls_trimmed)
-
-    if alt_hit is not None:
-        alt_l1_prefix = _polyline_prefix(primitives["inner_alt_l1"].points_rz, alt_hit)
-        alt_ls_suffix = _polyline_suffix(alt_ls_trimmed, alt_hit, which="b")
-        inner_segments = [
-            primitives["inner_alt_theta2"].points_rz,
-            alt_l1_prefix,
-            alt_ls_suffix,
+    inner_segments = [segment.copy() for segment in base_inner_segments]
+    chosen_inner_mode = "mode3_inner"
+    family_path = _concat_curve_segments(
+        [
+            primitives["inner_family_theta2"].points_rz,
+            primitives["inner_ls_cover"].points_rz[1:],
         ]
-        chosen_inner_mode = "alt_inner_with_ls_cover"
+    )
+    cover_hit_seg = None
+    cover_hit = None
+
+    hit_candidates = []
+    if family_path.shape[0] >= 2:
+        hit_seg1 = _first_polyline_intersection(base_inner_seg1, family_path)
+        hit_seg2 = _first_polyline_intersection(base_inner_seg2, family_path)
+        if hit_seg1 is not None:
+            hit_candidates.append(("mode3_inner_theta2", hit_seg1))
+        if hit_seg2 is not None:
+            hit_candidates.append(("mode3_inner_l1", hit_seg2))
+
+    if hit_candidates:
+        cover_hit_seg, cover_hit = min(hit_candidates, key=lambda item: item[1]["idx_a"] + item[1]["t_a"])
+        family_suffix = _polyline_suffix(family_path, cover_hit, which="b")
+        if cover_hit_seg == "mode3_inner_theta2":
+            inner_segments = [
+                _polyline_prefix(base_inner_seg1, cover_hit),
+                family_suffix,
+            ]
+        else:
+            inner_segments = [
+                base_inner_seg1.copy(),
+                _polyline_prefix(base_inner_seg2, cover_hit),
+                family_suffix,
+            ]
+        chosen_inner_mode = f"family_path_trims_{cover_hit_seg}"
 
     inner_curve = _concat_curve_segments(inner_segments)
     axis_connector = _build_axis_closure(inner_curve[-1], outer_segments[-1][-1])
@@ -720,13 +1173,93 @@ def build_mode4_profile(csm, length_samples=240, angle_samples=240):
             "outer_segments": [segment.copy() for segment in outer_segments],
             "inner_segments": [segment.copy() for segment in inner_segments],
             "theta1_break": float(theta1_break),
-            "alt_hit": None if alt_hit is None else dict(alt_hit),
+            "theta2_break": float(theta2_break),
+            "family_path": family_path.copy(),
+            "cover_hit_seg": cover_hit_seg,
+            "cover_hit": None if cover_hit is None else dict(cover_hit),
             "chosen_inner_mode": chosen_inner_mode,
         },
     )
 
 
+def build_mode0_profile(csm, length_samples=240, angle_samples=240):
+    route_length_samples = min(length_samples, MODE0_ROUTE_LENGTH_SAMPLES)
+    route_angle_samples = min(angle_samples, MODE0_ROUTE_ANGLE_SAMPLES)
+    source_profiles = _collect_mode0_sources(
+        csm,
+        length_samples=route_length_samples,
+        angle_samples=route_angle_samples,
+    )
+    outer_source_mode = 4 if source_profiles.get(4) is not None else 3
+    outer_profile = source_profiles[outer_source_mode]
+
+    curves = []
+    for mode in sorted(source_profiles):
+        profile = source_profiles[mode]
+        if profile is None:
+            continue
+        for idx, segment in enumerate(profile.inner_segments):
+            curves.append(
+                {
+                    "name": f"mode{mode}_inner_{idx}",
+                    "role": "inner",
+                    "points": np.asarray(segment, dtype=float),
+                }
+            )
+        for idx, segment in enumerate(profile.outer_segments):
+            curves.append(
+                {
+                    "name": f"mode{mode}_outer_{idx}",
+                    "role": "outer",
+                    "points": np.asarray(segment, dtype=float),
+                }
+            )
+
+    start_curve_name = "mode1_inner_0"
+    target_curve_names = [f"mode{outer_source_mode}_outer_{idx}" for idx in range(len(outer_profile.outer_segments))]
+    try:
+        inner_path_forward, trace_debug = _trace_right_turn_path(curves, start_curve_name, target_curve_names)
+    except RuntimeError as exc:
+        report_path = DEBUG_OUTPUT_DIR / "mode0_trace_failure.txt"
+        _write_mode0_debug_report(curves, str(exc), report_path)
+        raise RuntimeError(f"{exc} Debug report written to: {report_path.resolve()}") from exc
+    inner_curve = inner_path_forward.copy()
+    all_points = [outer_profile.outer_open_curve_rz]
+    all_points.extend(curve["points"] for curve in curves)
+    min_z = float(np.min(np.concatenate([points[:, 1] for points in all_points if len(points) > 0])))
+    inner_curve = _extend_curve_outer_endpoint_downward(inner_curve, min_z)
+
+    axis_connector = _build_axis_closure(inner_curve[-1], outer_profile.outer_segments[-1][-1])
+    outer_path = _concat_curve_segments([segment[::-1] for segment in outer_profile.outer_segments[::-1]])
+    closed_profile = _concat_curve_segments((inner_curve, axis_connector[1:], outer_path[1:]))
+
+    return WorkspaceProfile(
+        mode=0,
+        inner_segments=[inner_curve],
+        outer_segments=[segment.copy() for segment in outer_profile.outer_segments],
+        outer_open_curve_rz=outer_profile.outer_open_curve_rz.copy(),
+        unreachable_open_curves_rz=[inner_curve],
+        closed_profile_rz=closed_profile,
+        unreachable_closed_profiles_rz=[_close_curve_to_axis(inner_curve)],
+        debug_data={
+            "outer_source_mode": int(outer_source_mode),
+            "source_profiles": [mode for mode, profile in source_profiles.items() if profile is not None],
+            "route_length_samples": int(route_length_samples),
+            "route_angle_samples": int(route_angle_samples),
+            "outer_segments": [segment.copy() for segment in outer_profile.outer_segments],
+            "inner_segments": [inner_curve.copy()],
+            "trace_path": inner_path_forward.copy(),
+            "trace_segments": [segment.copy() for segment in trace_debug["path_segments"]],
+            "trace_start_node": trace_debug["start_node"],
+            "trace_target_nodes": trace_debug["target_nodes"],
+            "all_curves": [(curve["name"], curve["role"], curve["points"].copy()) for curve in curves],
+        },
+    )
+
+
 def build_workspace_profile(csm, mode):
+    if mode == 0:
+        return build_mode0_profile(csm)
     if mode == 1:
         return build_mode1_profile(csm)
     if mode == 2:
@@ -938,11 +1471,34 @@ def save_profile_debug_figure(profile):
     for name, curve in primitives.items():
         _plot_debug_curve(ax, curve, label=name, color=color_map.get(name, "#444444"), linewidth=1.4, alpha=0.9)
 
+    for entry in debug.get("all_curves", []):
+        if len(entry) != 3:
+            continue
+        name, role, curve = entry
+        _plot_debug_curve(
+            ax,
+            curve,
+            label=name,
+            color="#8A8A8A" if role == "outer" else "#C28C62",
+            linewidth=1.2,
+            linestyle="--",
+            alpha=0.55,
+        )
+
     for idx, segment in enumerate(debug.get("outer_segments", [])):
         _plot_debug_curve(ax, segment, label=f"outer_seg_{idx+1}", color="#1F5D78", linewidth=2.2, alpha=0.95)
 
     for idx, segment in enumerate(debug.get("inner_segments", [])):
         _plot_debug_curve(ax, segment, label=f"inner_seg_{idx+1}", color=UNREACHABLE_COLOR, linewidth=2.2, alpha=0.95)
+
+    for idx, segment in enumerate(debug.get("trace_segments", [])):
+        _plot_debug_curve(ax, segment, label=f"trace_seg_{idx+1}", color="#111111", linewidth=2.6, alpha=0.95)
+
+    trace_path = debug.get("trace_path")
+    if trace_path is not None:
+        trace_mm = np.asarray(trace_path, dtype=float) * 1000.0
+        ax.scatter(trace_mm[:, 0], trace_mm[:, 1], s=12, color="#111111", alpha=0.7, zorder=6, label="trace_path")
+        ax.scatter(-trace_mm[:, 0], trace_mm[:, 1], s=12, color="#111111", alpha=0.7, zorder=6)
 
     for hit_key, color in (("hit_tau1", "#7C5CFC"), ("hit_tau2", "#2E8B57"), ("chosen_hit", "#111111")):
         hit = debug.get(hit_key)
