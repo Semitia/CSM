@@ -78,9 +78,63 @@ python3 scripts/display.py
 # 单段轨迹演示
 python3 scripts/run_traj.py
 
+# 交互式末端控制窗口
+python3 scripts/example_control_interface.py
+
 # 批量实验
 python3 scripts/run_experiment.py
 ```
+
+## 交互式控制窗口
+
+现在可以通过 [`src/csm/control_interface.py`](/home/winslow/RII/CSM/src/csm/control_interface.py) 启动一个实时交互控制窗口。
+
+设计思路：
+
+- 保留当前已有的雅可比逆解。
+- 每次键盘输入只产生一个很小的末端位姿增量。
+- 求解器每个显示帧内部执行多个 `delta_t` 微步，并始终从当前构型附近继续迭代。
+
+这很适合你现在这种“实时拖动末端、每一步都是微小位移”的交互控制方式。
+
+### 运行示例
+
+```bash
+python3 scripts/example_control_interface.py
+```
+
+### 控制方式
+
+- `W / S`: 沿世界坐标 `+Y / -Y` 平移
+- `A / D`: 沿世界坐标 `+X / -X` 平移
+- `Q / E`: 沿世界坐标 `+Z / -Z` 平移
+- `J / L`: 控制偏航
+- `I / K`: 控制俯仰
+- 鼠标仅用于旋转观察视角
+- `R`: 复位
+
+说明：
+
+- 当前末端朝向在项目里是一个方向向量，因此只有 2 个独立姿态自由度。
+- 所以这版交互界面只有两对朝向控制键，这是和当前模型表示一致的，不是少实现了一对。
+
+### 代码示例
+
+```python
+from csm import CSM, launch_control_interface
+
+csm = CSM.from_config("config/csm_cfg_3mm.yaml")
+launch_control_interface(
+    csm,
+    render_mode="detailed",
+    frame_interval_ms=20,
+    linear_speed=0.04,
+    angular_speed=2.0,
+    orientation_key_speed=1.8,
+)
+```
+
+更完整的说明见 [control_interface.md](/home/winslow/RII/CSM/docs/control_interface.md)。
 
 ## 机械臂可视化
 
