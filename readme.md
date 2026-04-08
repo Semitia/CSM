@@ -192,6 +192,24 @@ python3 scripts/plot_workspace.py
 - 强调真实可达体积和凹陷结构：`sampling_method="random"` + `RENDER_MODE="cloud"`。
 - 想保留原始对比方式：继续使用 `RENDER_MODE="wire"` 或 `"both"`。
 
+## Workspace Boundary Scan
+
+现在 `plot_workspace_boundary_scan.py` 已经被整理成包内功能，可以直接从 `csm.workspace_boundary_scan` 调用。
+
+常用入口：
+
+```python
+from csm.workspace_boundary_scan import (
+    BoundaryScanOptions,
+    BoundaryScanPlotOptions,
+    build_workspace_profiles,
+    plot_workspace_profiles,
+)
+```
+
+说明文档见 [workspace_boundary_scan.md](/home/winslow/RII/CSM/docs/workspace_boundary_scan.md)，
+示例脚本见 [example_workspace_boundary_scan.py](/home/winslow/RII/CSM/scripts/example_workspace_boundary_scan.py)。
+
 ## 配置文件
 
 [`config/csm_cfg_3.4mm.yaml`](/home/winslow/RII/CSM/config/csm_cfg_3.4mm.yaml) 包含机器人物理参数与控制参数，例如：
