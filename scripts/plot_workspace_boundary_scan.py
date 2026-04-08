@@ -4,8 +4,8 @@ Description: Build workspace profiles by directly scanning boundary motions inst
 of extracting contours from dense point clouds.
 
 Current status:
-- mode 1 implemented
-- mode 2/3/4/0 reserved in the framework
+- mode 1/2/3/4 implemented
+- mode 0 reserved in the framework
 """
 from dataclasses import dataclass
 import os
@@ -17,9 +17,9 @@ import numpy as np
 from csm import CSM
 
 
-CONFIG_NAME = "csm_cfg_6mm.yaml"
+CONFIG_NAME = "csm_cfg_0_tool.yaml"
 CONFIG_PATH = Path("./config") / CONFIG_NAME
-PLOT_MODES = [1, 2]
+PLOT_MODES = [3, 4]
 
 FIGSIZE = None
 REVOLVE_SAMPLES = 30
@@ -303,6 +303,108 @@ def _sample_mode2_lr_curve(csm, theta_2, lr_start, lr_end, length_samples=240):
     return np.column_stack((radii, heights))
 
 
+def _sample_mode3_theta2_curve(csm, L1, theta_1, theta_start, theta_end, angle_samples=240):
+    states = []
+    for theta_2 in np.linspace(theta_start, theta_end, angle_samples):
+        states.append(
+            {
+                "mode": 3,
+                "L1": L1,
+                "L2": csm.L_20,
+                "Lr": csm.L_r0,
+                "Ls": 0.0,
+                "theta_1": theta_1,
+                "theta_2": theta_2,
+            }
+        )
+    return _sample_state_curve(csm, states)
+
+
+def _sample_mode3_theta1_curve(csm, L1, theta1_start, theta1_end, theta_2, angle_samples=240):
+    states = []
+    for theta_1 in np.linspace(theta1_start, theta1_end, angle_samples):
+        states.append(
+            {
+                "mode": 3,
+                "L1": L1,
+                "L2": csm.L_20,
+                "Lr": csm.L_r0,
+                "Ls": 0.0,
+                "theta_1": theta_1,
+                "theta_2": theta_2,
+            }
+        )
+    return _sample_state_curve(csm, states)
+
+
+def _sample_mode3_l1_curve(csm, theta_2, l1_start, l1_end, length_samples=240):
+    states = []
+    for L1 in np.linspace(l1_start, l1_end, length_samples):
+        states.append(
+            {
+                "mode": 3,
+                "L1": L1,
+                "L2": csm.L_20,
+                "Lr": csm.L_r0,
+                "Ls": 0.0,
+                "theta_1": min(csm.kappa_10 * L1, csm.theta1_limit),
+                "theta_2": theta_2,
+            }
+        )
+    return _sample_state_curve(csm, states)
+
+
+def _sample_mode4_theta1_curve(csm, Ls, theta1_start, theta1_end, theta_2, angle_samples=240):
+    states = []
+    for theta_1 in np.linspace(theta1_start, theta1_end, angle_samples):
+        states.append(
+            {
+                "mode": 4,
+                "L1": csm.L_10,
+                "L2": csm.L_20,
+                "Lr": csm.L_r0,
+                "Ls": Ls,
+                "theta_1": theta_1,
+                "theta_2": theta_2,
+            }
+        )
+    return _sample_state_curve(csm, states)
+
+
+def _sample_mode4_theta2_curve(csm, Ls, theta_1, theta_start, theta_end, angle_samples=240):
+    states = []
+    for theta_2 in np.linspace(theta_start, theta_end, angle_samples):
+        states.append(
+            {
+                "mode": 4,
+                "L1": csm.L_10,
+                "L2": csm.L_20,
+                "Lr": csm.L_r0,
+                "Ls": Ls,
+                "theta_1": theta_1,
+                "theta_2": theta_2,
+            }
+        )
+    return _sample_state_curve(csm, states)
+
+
+def _sample_mode4_ls_curve(csm, theta_1, theta_2, ls_start, ls_end, length_samples=240):
+    states = []
+    for Ls in np.linspace(ls_start, ls_end, length_samples):
+        states.append(
+            {
+                "mode": 4,
+                "L1": csm.L_10,
+                "L2": csm.L_20,
+                "Lr": csm.L_r0,
+                "Ls": Ls,
+                "theta_1": theta_1,
+                "theta_2": theta_2,
+            }
+        )
+    return _sample_state_curve(csm, states)
+
+
 def build_mode1_profile(csm, length_samples=240, angle_samples=240):
     inner_curve = _sample_mode1_inner_curve(csm, length_samples=length_samples)
     outer_curve = _sample_mode2_theta_sweep_curve(csm, Lr=0.0, angle_samples=angle_samples)
@@ -401,11 +503,238 @@ def build_mode2_profile(csm, length_samples=240, angle_samples=240):
     )
 
 
+def build_mode3_profile(csm, length_samples=240, angle_samples=240):
+    primitives = {
+        "tau0": BoundaryPrimitive(
+            "tau0",
+            _sample_mode3_theta2_curve(
+                csm,
+                L1=0.0,
+                theta_1=0.0,
+                theta_start=0.0,
+                theta_end=csm.theta2_limit,
+                angle_samples=angle_samples,
+            ),
+        ),
+        "tau1": BoundaryPrimitive(
+            "tau1",
+            _sample_mode3_l1_curve(
+                csm,
+                theta_2=csm.theta2_limit,
+                l1_start=0.0,
+                l1_end=csm.L_10,
+                length_samples=length_samples,
+            ),
+        ),
+        "tau2": BoundaryPrimitive(
+            "tau2",
+            _sample_mode3_theta2_curve(
+                csm,
+                L1=csm.L_10,
+                theta_1=csm.theta1_limit,
+                theta_start=csm.theta2_limit,
+                theta_end=0.0,
+                angle_samples=angle_samples,
+            ),
+        ),
+        "tau3": BoundaryPrimitive(
+            "tau3",
+            _sample_mode3_theta1_curve(
+                csm,
+                L1=csm.L_10,
+                theta1_start=csm.theta1_limit,
+                theta1_end=0.0,
+                theta_2=0.0,
+                angle_samples=angle_samples,
+            ),
+        ),
+    }
+
+    inner_segments = [
+        primitives["tau0"].points_rz,
+        primitives["tau1"].points_rz,
+    ]
+    outer_segments = [
+        primitives["tau2"].points_rz,
+        primitives["tau3"].points_rz,
+    ]
+
+    inner_curve = _concat_curve_segments(inner_segments)
+    axis_connector = _build_axis_closure(inner_curve[-1], outer_segments[-1][-1])
+    outer_path = _concat_curve_segments([segment[::-1] for segment in outer_segments[::-1]])
+    closed_profile = _concat_curve_segments((inner_curve, axis_connector[1:], outer_path[1:]))
+
+    return WorkspaceProfile(
+        mode=3,
+        inner_segments=[segment.copy() for segment in inner_segments],
+        outer_segments=[segment.copy() for segment in outer_segments],
+        outer_open_curve_rz=_concat_curve_segments(outer_segments),
+        unreachable_open_curves_rz=[inner_curve],
+        closed_profile_rz=closed_profile,
+        unreachable_closed_profiles_rz=[_close_curve_to_axis(inner_curve)],
+        debug_data={
+            "primitives": {name: primitive.points_rz.copy() for name, primitive in primitives.items()},
+            "outer_segments": [segment.copy() for segment in outer_segments],
+            "inner_segments": [segment.copy() for segment in inner_segments],
+        },
+    )
+
+
+def build_mode4_profile(csm, length_samples=240, angle_samples=240):
+    theta1_break = min(csm.theta1_limit, 0.5 * np.pi)
+
+    primitives = {
+        "outer_theta1": BoundaryPrimitive(
+            "outer_theta1",
+            _sample_mode4_theta1_curve(
+                csm,
+                Ls=csm.L_s0,
+                theta1_start=0.0,
+                theta1_end=theta1_break,
+                theta_2=0.0,
+                angle_samples=angle_samples,
+            ),
+        ),
+        "outer_ls": BoundaryPrimitive(
+            "outer_ls",
+            _sample_mode4_ls_curve(
+                csm,
+                theta_1=theta1_break,
+                theta_2=0.0,
+                ls_start=csm.L_s0,
+                ls_end=0.0,
+                length_samples=length_samples,
+            ),
+        ),
+        "outer_theta2": BoundaryPrimitive(
+            "outer_theta2",
+            _sample_mode4_theta2_curve(
+                csm,
+                Ls=0.0,
+                theta_1=theta1_break,
+                theta_start=0.0,
+                theta_end=csm.theta2_limit,
+                angle_samples=angle_samples,
+            ),
+        ),
+        "inner_base_theta1": BoundaryPrimitive(
+            "inner_base_theta1",
+            _sample_mode3_theta1_curve(
+                csm,
+                L1=csm.L_10,
+                theta1_start=0.0,
+                theta1_end=csm.theta1_limit,
+                theta_2=0.0,
+                angle_samples=angle_samples,
+            ),
+        ),
+        "inner_base_theta2": BoundaryPrimitive(
+            "inner_base_theta2",
+            _sample_mode3_theta2_curve(
+                csm,
+                L1=csm.L_10,
+                theta_1=csm.theta1_limit,
+                theta_start=0.0,
+                theta_end=csm.theta2_limit,
+                angle_samples=angle_samples,
+            ),
+        ),
+        "inner_alt_theta2": BoundaryPrimitive(
+            "inner_alt_theta2",
+            _sample_mode3_theta2_curve(
+                csm,
+                L1=0.0,
+                theta_1=0.0,
+                theta_start=0.0,
+                theta_end=csm.theta2_limit,
+                angle_samples=angle_samples,
+            ),
+        ),
+        "inner_alt_l1": BoundaryPrimitive(
+            "inner_alt_l1",
+            _sample_mode3_l1_curve(
+                csm,
+                theta_2=csm.theta2_limit,
+                l1_start=0.0,
+                l1_end=csm.L_10,
+                length_samples=length_samples,
+            ),
+        ),
+        "inner_alt_ls": BoundaryPrimitive(
+            "inner_alt_ls",
+            _sample_mode4_ls_curve(
+                csm,
+                theta_1=csm.theta1_limit,
+                theta_2=csm.theta2_limit,
+                ls_start=0.0,
+                ls_end=csm.L_s0,
+                length_samples=length_samples,
+            ),
+        ),
+    }
+
+    outer_segments = [
+        primitives["outer_theta1"].points_rz,
+        primitives["outer_ls"].points_rz,
+        primitives["outer_theta2"].points_rz,
+    ]
+
+    base_inner_segments = [
+        primitives["inner_base_theta1"].points_rz,
+        primitives["inner_base_theta2"].points_rz,
+    ]
+
+    inner_segments = base_inner_segments
+    chosen_inner_mode = "base_mode3_outer"
+    alt_hit = None
+
+    alt_ls_trimmed = primitives["inner_alt_ls"].points_rz[1:].copy()
+    if alt_ls_trimmed.shape[0] >= 2:
+        alt_hit = _first_polyline_intersection(primitives["inner_alt_l1"].points_rz, alt_ls_trimmed)
+
+    if alt_hit is not None:
+        alt_l1_prefix = _polyline_prefix(primitives["inner_alt_l1"].points_rz, alt_hit)
+        alt_ls_suffix = _polyline_suffix(alt_ls_trimmed, alt_hit, which="b")
+        inner_segments = [
+            primitives["inner_alt_theta2"].points_rz,
+            alt_l1_prefix,
+            alt_ls_suffix,
+        ]
+        chosen_inner_mode = "alt_inner_with_ls_cover"
+
+    inner_curve = _concat_curve_segments(inner_segments)
+    axis_connector = _build_axis_closure(inner_curve[-1], outer_segments[-1][-1])
+    outer_path = _concat_curve_segments([segment[::-1] for segment in outer_segments[::-1]])
+    closed_profile = _concat_curve_segments((inner_curve, axis_connector[1:], outer_path[1:]))
+
+    return WorkspaceProfile(
+        mode=4,
+        inner_segments=[segment.copy() for segment in inner_segments],
+        outer_segments=[segment.copy() for segment in outer_segments],
+        outer_open_curve_rz=_concat_curve_segments(outer_segments),
+        unreachable_open_curves_rz=[inner_curve],
+        closed_profile_rz=closed_profile,
+        unreachable_closed_profiles_rz=[_close_curve_to_axis(inner_curve)],
+        debug_data={
+            "primitives": {name: primitive.points_rz.copy() for name, primitive in primitives.items()},
+            "outer_segments": [segment.copy() for segment in outer_segments],
+            "inner_segments": [segment.copy() for segment in inner_segments],
+            "theta1_break": float(theta1_break),
+            "alt_hit": None if alt_hit is None else dict(alt_hit),
+            "chosen_inner_mode": chosen_inner_mode,
+        },
+    )
+
+
 def build_workspace_profile(csm, mode):
     if mode == 1:
         return build_mode1_profile(csm)
     if mode == 2:
         return build_mode2_profile(csm)
+    if mode == 3:
+        return build_mode3_profile(csm)
+    if mode == 4:
+        return build_mode4_profile(csm)
     raise NotImplementedError(f"Mode {mode} is not implemented yet in boundary-scan plotting.")
 
 
