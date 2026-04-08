@@ -4,6 +4,7 @@ Description: Directly sample a side-view workspace profile from the robot model,
 smooth the reachable/unreachable contours, and revolve them into a paper-like 3D plot.
 """
 import json
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -17,10 +18,10 @@ from tqdm.auto import tqdm
 from csm.model import CSM
 
 # ===== Data source =====
-CONFIG_NAME = "csm_cfg_6mm.yaml"
+CONFIG_NAME = "csm_cfg_0_tool.yaml"
 CONFIG_PATH = Path("./config") / CONFIG_NAME
 # PLOT_MODES = [1, 2, 3, 4]
-PLOT_MODES = [1]
+PLOT_MODES = [4]
 COMBINED_SOURCE_MODES = (1, 2, 3, 4)
 CACHE_DIR = Path("./data/profile_cache")
 USE_CACHE = True
@@ -72,6 +73,7 @@ UNREACHABLE_ALPHA = 0.40
 # ===== Figure =====
 SEPARATE_PLOTS = False
 OUTPUT_PATH = None
+FALLBACK_OUTPUT_PATH = Path("./data/plot_workspace_2_fallback.png")
 FIGSIZE = (10, 10)
 VIEW_ELEV = 18
 VIEW_AZIM = -40
@@ -79,6 +81,7 @@ SHOW_AXES = True
 DISPLAY_IN_MM = True
 SHOW_SIDE_VIEW = True
 SHOW_SAMPLE_SCATTER = True
+SHOW_SCATTER_PROFILE_CURVES = True
 PSEUDO_VIEW_ELEV = 18
 PSEUDO_VIEW_AZIM = -40
 PSEUDO_MERIDIAN_SAMPLES = 240
@@ -87,12 +90,43 @@ SIDE_REAL_VIEW_AZIM = -90
 SHOW_MANIPULATOR = True
 MANIPULATOR_RENDER_MODE = "detailed"
 MANIPULATOR_RNG_SEED = 20260406
+UNREACHABLE_LINE_INSET_RADIAL_RES = 2.2
+UNREACHABLE_LINEWIDTH = 0.6
+UNREACHABLE_SCATTER_LINEWIDTH = 1.1
+
+
+def _has_interactive_display():
+    display = os.environ.get("DISPLAY")
+    wayland_display = os.environ.get("WAYLAND_DISPLAY")
+    backend = plt.get_backend().lower()
+    if "agg" in backend:
+        return False
+    return bool(display or wayland_display)
 
 
 def _linspace_from_zero(stop, num):
     if num <= 1 or stop <= 0:
         return np.array([0.0], dtype=float)
     return np.linspace(0.0, float(stop), int(num))
+
+
+def _estimated_radial_resolution(r_vals):
+    r_vals = np.asarray(r_vals, dtype=float)
+    finite = r_vals[np.isfinite(r_vals)]
+    if finite.size == 0:
+        return 0.0
+    return float(np.max(finite)) / max(PROFILE_R_BINS, 1)
+
+
+def _inset_unreachable_curve_r(r_vals, reference_r=None, inset_scale=UNREACHABLE_LINE_INSET_RADIAL_RES):
+    r_vals = np.asarray(r_vals, dtype=float)
+    if reference_r is None:
+        reference_r = r_vals
+    radial_res = _estimated_radial_resolution(reference_r)
+    if radial_res <= 0.0:
+        return r_vals.copy()
+    inset = float(inset_scale * radial_res)
+    return np.maximum(r_vals - inset, 0.0)
 
 
 def _cache_file_path(mode):
@@ -1162,9 +1196,9 @@ def _build_regular_profile_from_side_points(side_points):
 
     radial_res = r_max / max(PROFILE_R_BINS, 1)
     inner_valid = np.interp(z_valid, z_centers, inner_r, left=0.0, right=0.0)
-    inner_valid = np.clip(inner_valid, 0.0, outer_valid * 0.98)
+    inner_upper = np.maximum(outer_valid - 0.5 * radial_res, 0.0)
+    inner_valid = np.minimum(np.maximum(inner_valid, 0.0), inner_upper)
     inner_valid[inner_valid < 0.5 * radial_res] = 0.0
-
     inner_keep = _longest_true_run(inner_valid > 0.0, inner_valid ** 2)
     inner_valid = np.where(inner_keep, inner_valid, 0.0)
 
@@ -2034,6 +2068,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
         void_floor_z = float(profile["mode0_void_floor_z"])
         void_outline_r = np.asarray(profile.get("mode0_void_outline_r", void_r), dtype=float)
         void_outline_z = np.asarray(profile.get("mode0_void_outline_z", void_upper_z), dtype=float)
+        void_outline_draw_r = _inset_unreachable_curve_r(void_outline_r, reference_r=outer_r_plot)
         void_lower_z = np.full_like(void_r, void_floor_z)
 
         if style == "pseudo_3d":
@@ -2052,9 +2087,12 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                     pass
             if SHOW_UNREACHABLE and void_r.size >= 4:
                 if "mode0_void_outline_r" in profile:
-                    poly = _plot_mode0_void_on_pseudo_plane(
+                    x_poly = np.concatenate([void_outline_draw_r, -void_outline_draw_r[::-1]])
+                    z_poly = np.concatenate([void_outline_z, void_outline_z[::-1]])
+                    poly = _plot_pseudo_plane_polygon(
                         ax,
-                        profile,
+                        x_poly,
+                        z_poly,
                         color=UNREACHABLE_COLOR,
                         alpha=1.0,
                         label=None,
@@ -2067,7 +2105,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                 else:
                     poly = _plot_symmetric_band_on_pseudo_plane(
                         ax,
-                        void_r,
+                        void_outline_draw_r,
                         void_lower_z,
                         void_upper_z,
                         color=UNREACHABLE_COLOR,
@@ -2094,7 +2132,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
             plot_revolved_profile(
                 ax,
                 void_outline_z,
-                void_outline_r,
+                void_outline_draw_r,
                 color=UNREACHABLE_COLOR,
                 alpha=UNREACHABLE_ALPHA,
                 label=None,
@@ -2106,6 +2144,8 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
         void_r, void_upper_z, void_floor_z = _build_mode1_void_curve(profile)
         void_tail_r, void_tail_z = _build_mode1_void_tail(profile)
+        void_draw_r = _inset_unreachable_curve_r(void_r, reference_r=upper_r) if void_r is not None else None
+        void_tail_draw_r = _inset_unreachable_curve_r(void_tail_r, reference_r=upper_r) if void_tail_r is not None else None
         lower_draw_r, lower_draw_z = _mode1_outer_lower_draw_curve(profile)
 
         if style == "pseudo_3d":
@@ -2129,7 +2169,8 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                 poly = None
                 if void_polygon is not None:
                     polygon_r, polygon_z, _ = void_polygon
-                    x_poly = np.concatenate([polygon_r, -polygon_r[::-1]])
+                    polygon_draw_r = _inset_unreachable_curve_r(polygon_r, reference_r=upper_r)
+                    x_poly = np.concatenate([polygon_draw_r, -polygon_draw_r[::-1]])
                     z_poly = np.concatenate([polygon_z, polygon_z[::-1]])
                     poly = _plot_pseudo_plane_polygon(
                         ax,
@@ -2142,7 +2183,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                 else:
                     poly = _plot_symmetric_band_on_pseudo_plane(
                         ax,
-                        void_r,
+                        void_draw_r,
                         np.full_like(void_r, void_floor_z),
                         void_upper_z,
                         color=UNREACHABLE_COLOR,
@@ -2178,10 +2219,11 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
             void_polygon = _mode1_void_polygon(profile)
             if void_polygon is not None:
                 polygon_r, polygon_z, _ = void_polygon
+                polygon_draw_r = _inset_unreachable_curve_r(polygon_r, reference_r=upper_r)
                 plot_revolved_profile(
                     ax,
                     polygon_z,
-                    polygon_r,
+                    polygon_draw_r,
                     color=UNREACHABLE_COLOR,
                     alpha=UNREACHABLE_ALPHA,
                     label=None,
@@ -2191,7 +2233,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                 plot_revolved_profile(
                     ax,
                     void_upper_z,
-                    void_r,
+                    void_draw_r,
                     color=UNREACHABLE_COLOR,
                     alpha=UNREACHABLE_ALPHA,
                     label=None,
@@ -2200,6 +2242,9 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
         return
 
     outer_z_plot, outer_r_plot, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
+    inner_draw_r = None
+    if inner_z_plot is not None and inner_z_plot.size >= 4:
+        inner_draw_r = _inset_unreachable_curve_r(inner_r_plot, reference_r=outer_r_plot)
 
     if style == "pseudo_3d":
         poly = _plot_profile_on_pseudo_plane(
@@ -2220,7 +2265,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
                 poly = _plot_profile_on_pseudo_plane(
                     ax,
                     inner_z_plot,
-                    inner_r_plot,
+                    inner_draw_r,
                     color=UNREACHABLE_COLOR,
                     alpha=1.0,
                     label=None,
@@ -2247,7 +2292,7 @@ def draw_mode_workspace(ax, profile, mode, style="real_3d"):
             plot_revolved_profile(
                 ax,
                 inner_z_plot,
-                inner_r_plot,
+                inner_draw_r,
                 color=UNREACHABLE_COLOR,
                 alpha=UNREACHABLE_ALPHA,
                 label=None,
@@ -2456,9 +2501,11 @@ def draw_mode_main_pseudo(ax, profile, mode, proj_matrix):
             if mode == 0 and "mode0_void_outline_r" in profile:
                 void_outline_r = np.asarray(profile["mode0_void_outline_r"], dtype=float)
                 void_outline_z = np.asarray(profile["mode0_void_outline_z"], dtype=float)
-                unreachable_quads.extend(_surface_quads_from_curve(void_outline_z, void_outline_r))
+                void_outline_draw_r = _inset_unreachable_curve_r(void_outline_r, reference_r=outer_r)
+                unreachable_quads.extend(_surface_quads_from_curve(void_outline_z, void_outline_draw_r))
             elif inner_z is not None and inner_z.size >= 4:
-                unreachable_quads.extend(_surface_quads_from_curve(inner_z, inner_r))
+                inner_draw_r = _inset_unreachable_curve_r(inner_r, reference_r=outer_r)
+                unreachable_quads.extend(_surface_quads_from_curve(inner_z, inner_draw_r))
 
     _render_projected_surface_quads(ax, outer_quads, proj_matrix, color=display_color, alpha=1.0, zorder=1)
     if unreachable_quads:
@@ -2471,6 +2518,7 @@ def draw_mode_side_view(ax, profile, mode):
         z, outer_r, _, _ = _build_plot_curves(profile, mode)
         void_r = np.asarray(profile["mode0_void_r"], dtype=float)
         void_upper_z = np.asarray(profile["mode0_void_upper_z"], dtype=float)
+        void_draw_r = _inset_unreachable_curve_r(void_r, reference_r=outer_r)
         void_polygon = _mode0_void_polygon(profile)
         void_floor_z = float(profile["mode0_void_floor_z"])
 
@@ -2478,11 +2526,12 @@ def draw_mode_side_view(ax, profile, mode):
         if SHOW_UNREACHABLE and void_r.size >= 4:
             if void_polygon is not None:
                 polygon_r, polygon_z, _ = void_polygon
-                ax.fill(polygon_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
-                ax.fill(-polygon_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                polygon_draw_r = _inset_unreachable_curve_r(polygon_r, reference_r=outer_r)
+                ax.fill(polygon_draw_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                ax.fill(-polygon_draw_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
             else:
-                ax.fill_between(void_r, void_floor_z, void_upper_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
-                ax.fill_between(-void_r, void_floor_z, void_upper_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                ax.fill_between(void_draw_r, void_floor_z, void_upper_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                ax.fill_between(-void_draw_r, void_floor_z, void_upper_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
 
         ax.plot(outer_r, z, color=display_color, linewidth=1.0, alpha=0.9)
         ax.plot(-outer_r, z, color=display_color, linewidth=1.0, alpha=0.9)
@@ -2490,11 +2539,12 @@ def draw_mode_side_view(ax, profile, mode):
             if "mode0_void_outline_r" in profile:
                 void_outline_r = np.asarray(profile["mode0_void_outline_r"], dtype=float)
                 void_outline_z = np.asarray(profile["mode0_void_outline_z"], dtype=float)
-                ax.plot(void_outline_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
-                ax.plot(-void_outline_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+                void_outline_draw_r = _inset_unreachable_curve_r(void_outline_r, reference_r=outer_r)
+                ax.plot(void_outline_draw_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
+                ax.plot(-void_outline_draw_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
             else:
-                ax.plot(void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
-                ax.plot(-void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+                ax.plot(void_draw_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
+                ax.plot(-void_draw_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
 
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, alpha=0.35)
@@ -2513,6 +2563,8 @@ def draw_mode_side_view(ax, profile, mode):
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
         void_r, void_upper_z, void_floor_z = _build_mode1_void_curve(profile)
         void_tail_r, void_tail_z = _build_mode1_void_tail(profile)
+        void_draw_r = _inset_unreachable_curve_r(void_r, reference_r=upper_r) if void_r is not None else None
+        void_tail_draw_r = _inset_unreachable_curve_r(void_tail_r, reference_r=upper_r) if void_tail_r is not None else None
         lower_draw_r, lower_draw_z = _mode1_outer_lower_draw_curve(profile)
         pos_x = np.concatenate([upper_r, lower_r[::-1]])
         pos_y = np.concatenate([upper_z, lower_z[::-1]])
@@ -2524,10 +2576,11 @@ def draw_mode_side_view(ax, profile, mode):
             void_polygon = _mode1_void_polygon(profile)
             if void_polygon is not None:
                 polygon_r, polygon_z, _ = void_polygon
-                ax.fill(polygon_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
-                ax.fill(-polygon_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                polygon_draw_r = _inset_unreachable_curve_r(polygon_r, reference_r=upper_r)
+                ax.fill(polygon_draw_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
+                ax.fill(-polygon_draw_r, polygon_z, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
             else:
-                pos_void_x = np.concatenate([void_r, void_r[::-1]])
+                pos_void_x = np.concatenate([void_draw_r, void_draw_r[::-1]])
                 pos_void_y = np.concatenate([void_upper_z, np.full_like(void_r, void_floor_z)[::-1]])
                 neg_void_x = -pos_void_x
                 ax.fill(pos_void_x, pos_void_y, color=UNREACHABLE_COLOR, alpha=0.80, linewidth=0)
@@ -2537,42 +2590,42 @@ def draw_mode_side_view(ax, profile, mode):
         ax.plot(lower_draw_r, lower_draw_z, color=display_color, linewidth=1.0, alpha=0.9)
         ax.plot(-lower_draw_r, lower_draw_z, color=display_color, linewidth=1.0, alpha=0.9)
         if SHOW_UNREACHABLE and void_r is not None:
-            ax.plot(void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
-            ax.plot(-void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+            ax.plot(void_draw_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
+            ax.plot(-void_draw_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
             if void_tail_r is not None and void_tail_z is not None and void_tail_r.size >= 2:
                 ax.plot(
-                    [float(void_tail_r[0]), float(void_tail_r[0])],
+                    [float(void_tail_draw_r[0]), float(void_tail_draw_r[0])],
                     [float(void_upper_z[-1]), float(void_tail_z[0])],
                     color=UNREACHABLE_COLOR,
                     linewidth=1.0,
                     alpha=0.95,
                 )
                 ax.plot(
-                    [-float(void_tail_r[0]), -float(void_tail_r[0])],
+                    [-float(void_tail_draw_r[0]), -float(void_tail_draw_r[0])],
                     [float(void_upper_z[-1]), float(void_tail_z[0])],
                     color=UNREACHABLE_COLOR,
                     linewidth=1.0,
                     alpha=0.95,
                 )
-                ax.plot(void_tail_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
-                ax.plot(-void_tail_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+                ax.plot(void_tail_draw_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
+                ax.plot(-void_tail_draw_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
                 ax.plot(
-                    [0.0, float(void_tail_r[-1])],
+                    [0.0, float(void_tail_draw_r[-1])],
                     [void_floor_z, void_floor_z],
                     color=UNREACHABLE_COLOR,
                     linewidth=1.0,
                     alpha=0.65,
                 )
                 ax.plot(
-                    [0.0, -float(void_tail_r[-1])],
+                    [0.0, -float(void_tail_draw_r[-1])],
                     [void_floor_z, void_floor_z],
                     color=UNREACHABLE_COLOR,
                     linewidth=1.0,
                     alpha=0.65,
                 )
             else:
-                ax.plot(void_r, np.full_like(void_r, void_floor_z), color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.65)
-                ax.plot(-void_r, np.full_like(void_r, void_floor_z), color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.65)
+                ax.plot(void_draw_r, np.full_like(void_r, void_floor_z), color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.65)
+                ax.plot(-void_draw_r, np.full_like(void_r, void_floor_z), color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.65)
 
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, alpha=0.35)
@@ -2592,10 +2645,11 @@ def draw_mode_side_view(ax, profile, mode):
     ax.fill_betweenx(z, -outer_r, outer_r, color=display_color, alpha=0.65, linewidth=0)
 
     if SHOW_UNREACHABLE and inner_z_plot is not None and inner_z_plot.size >= 4:
+        inner_draw_r = _inset_unreachable_curve_r(inner_r_plot, reference_r=outer_r)
         ax.fill_betweenx(
             inner_z_plot,
-            -inner_r_plot,
-            inner_r_plot,
+            -inner_draw_r,
+            inner_draw_r,
             color=UNREACHABLE_COLOR,
             alpha=0.80,
             linewidth=0,
@@ -2604,8 +2658,8 @@ def draw_mode_side_view(ax, profile, mode):
     ax.plot(outer_r, z, color=display_color, linewidth=1.0, alpha=0.9)
     ax.plot(-outer_r, z, color=display_color, linewidth=1.0, alpha=0.9)
     if inner_z_plot is not None and inner_z_plot.size >= 4:
-        ax.plot(inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
-        ax.plot(-inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=1.0, alpha=0.95)
+        ax.plot(inner_draw_r, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
+        ax.plot(-inner_draw_r, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_LINEWIDTH, alpha=0.95)
 
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.35)
@@ -2648,48 +2702,52 @@ def overlay_profile_curves(ax, profile, mode):
         z, outer_r, _, _ = _build_plot_curves(profile, mode)
         void_r = np.asarray(profile["mode0_void_r"], dtype=float)
         void_upper_z = np.asarray(profile["mode0_void_upper_z"], dtype=float)
+        void_draw_r = _inset_unreachable_curve_r(void_r, reference_r=outer_r)
         ax.plot(outer_r, z, color=display_color, linewidth=2.0, alpha=0.95)
         ax.plot(-outer_r, z, color=display_color, linewidth=2.0, alpha=0.95)
         if void_r.size >= 4:
             if "mode0_void_outline_r" in profile:
                 void_outline_r = np.asarray(profile["mode0_void_outline_r"], dtype=float)
                 void_outline_z = np.asarray(profile["mode0_void_outline_z"], dtype=float)
-                ax.plot(void_outline_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
-                ax.plot(-void_outline_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+                void_outline_draw_r = _inset_unreachable_curve_r(void_outline_r, reference_r=outer_r)
+                ax.plot(void_outline_draw_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
+                ax.plot(-void_outline_draw_r, void_outline_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
             else:
-                ax.plot(void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
-                ax.plot(-void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+                ax.plot(void_draw_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
+                ax.plot(-void_draw_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
         return
 
     if mode == 1 and "mode1_r" in profile:
         upper_r, upper_z, lower_r, lower_z = _build_mode1_plot_curves(profile)
         void_r, void_upper_z, _void_floor_z = _build_mode1_void_curve(profile)
         void_tail_r, void_tail_z = _build_mode1_void_tail(profile)
+        void_draw_r = _inset_unreachable_curve_r(void_r, reference_r=upper_r) if void_r is not None else None
+        void_tail_draw_r = _inset_unreachable_curve_r(void_tail_r, reference_r=upper_r) if void_tail_r is not None else None
         lower_draw_r, lower_draw_z = _mode1_outer_lower_draw_curve(profile)
         ax.plot(upper_r, upper_z, color=display_color, linewidth=2.0, alpha=0.95)
         ax.plot(-upper_r, upper_z, color=display_color, linewidth=2.0, alpha=0.95)
         ax.plot(lower_draw_r, lower_draw_z, color=display_color, linewidth=2.0, alpha=0.95)
         ax.plot(-lower_draw_r, lower_draw_z, color=display_color, linewidth=2.0, alpha=0.95)
         if SHOW_UNREACHABLE and void_r is not None:
-            ax.plot(void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
-            ax.plot(-void_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+            ax.plot(void_draw_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
+            ax.plot(-void_draw_r, void_upper_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
             if void_tail_r is not None and void_tail_z is not None and void_tail_r.size >= 2:
                 ax.plot(
-                    [float(void_tail_r[0]), float(void_tail_r[0])],
+                    [float(void_tail_draw_r[0]), float(void_tail_draw_r[0])],
                     [float(void_upper_z[-1]), float(void_tail_z[0])],
                     color=UNREACHABLE_COLOR,
                     linewidth=2.0,
                     alpha=0.95,
                 )
                 ax.plot(
-                    [-float(void_tail_r[0]), -float(void_tail_r[0])],
+                    [-float(void_tail_draw_r[0]), -float(void_tail_draw_r[0])],
                     [float(void_upper_z[-1]), float(void_tail_z[0])],
                     color=UNREACHABLE_COLOR,
                     linewidth=2.0,
                     alpha=0.95,
                 )
-                ax.plot(void_tail_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
-                ax.plot(-void_tail_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+                ax.plot(void_tail_draw_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
+                ax.plot(-void_tail_draw_r, void_tail_z, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
         return
 
     z, outer_r, inner_z_plot, inner_r_plot = _build_plot_curves(profile, mode)
@@ -2698,8 +2756,9 @@ def overlay_profile_curves(ax, profile, mode):
     ax.plot(-outer_r, z, color=display_color, linewidth=2.0, alpha=0.95)
 
     if inner_z_plot is not None and inner_z_plot.size >= 4:
-        ax.plot(inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
-        ax.plot(-inner_r_plot, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=2.0, alpha=0.95)
+        inner_draw_r = _inset_unreachable_curve_r(inner_r_plot, reference_r=outer_r)
+        ax.plot(inner_draw_r, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
+        ax.plot(-inner_draw_r, inner_z_plot, color=UNREACHABLE_COLOR, linewidth=UNREACHABLE_SCATTER_LINEWIDTH, alpha=0.95)
 
 
 def _collect_pseudo_main_bounds(all_profiles, manipulator_states_by_mode=None, proj_matrix=None):
@@ -3359,9 +3418,10 @@ def main():
         if scatter_ax is not None:
             for scatter_mode in scatter_modes:
                 draw_mode_side_scatter(scatter_ax, sampled_points[scatter_mode], scatter_mode)
-            for mode in PLOT_MODES:
-                if mode in profiles:
-                    overlay_profile_curves(scatter_ax, profiles[mode], mode)
+            if SHOW_SCATTER_PROFILE_CURVES:
+                for mode in PLOT_MODES:
+                    if mode in profiles:
+                        overlay_profile_curves(scatter_ax, profiles[mode], mode)
         if MAIN_VIEW_STYLE == "pseudo_3d":
             configure_pseudo_main_axes(ax, all_profiles, manipulator_states, proj_matrix=pseudo_proj_matrix)
         else:
@@ -3375,19 +3435,28 @@ def main():
         if scatter_ax is not None:
             scatter_input_points = {mode: sampled_points[mode] for mode in scatter_modes if mode in sampled_points}
             configure_side_view_axes(scatter_ax, all_profiles, manipulator_states, scatter_input_points)
-            scatter_ax.set_title("Sample Scatter")
+            scatter_ax.set_title("Sample Scatter + Fit" if SHOW_SCATTER_PROFILE_CURVES else "Sample Scatter")
         handles, labels = ax.get_legend_handles_labels()
         if handles:
             unique = dict(zip(labels, handles))
             ax.legend(unique.values(), unique.keys(), loc="upper right", frameon=False)
         plt.tight_layout()
 
-    if OUTPUT_PATH is not None:
-        OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(OUTPUT_PATH, dpi=300, bbox_inches="tight")
-        print(f"Saved figure to: {OUTPUT_PATH.resolve()}")
+    output_path = OUTPUT_PATH
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved figure to: {output_path.resolve()}")
 
-    plt.show()
+    if _has_interactive_display():
+        plt.show()
+    else:
+        if output_path is None:
+            FALLBACK_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(FALLBACK_OUTPUT_PATH, dpi=300, bbox_inches="tight")
+            print(f"No interactive display detected, saved figure to: {FALLBACK_OUTPUT_PATH.resolve()}")
+        else:
+            print("No interactive display detected, skipped plt.show().")
 
 
 if __name__ == "__main__":
