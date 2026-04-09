@@ -264,6 +264,23 @@ from csm.workspace_boundary_scan import (
 说明文档见 [workspace_boundary_scan.md](/home/winslow/RII/CSM/docs/workspace_boundary_scan.md)，
 示例脚本见 [example_workspace_boundary_scan.py](/home/winslow/RII/CSM/scripts/example_workspace_boundary_scan.py)。
 
+## Dexterous Workspace
+
+现在 `3mm + mode3` 的局部 dexterous workspace 也已经整理成包内功能，可以直接从 `csm.dexterous_workspace` 调用。
+
+常用入口：
+
+```python
+from csm import (
+    DexterousPlotOptions,
+    build_dexterous_probe,
+    render_dexterous_figure,
+)
+```
+
+说明文档见 [dexterous_workspace.md](/home/winslow/RII/CSM/docs/dexterous_workspace.md)，
+渲染脚本见 [render_dexterous_workspace.py](/home/winslow/RII/CSM/scripts/render_dexterous_workspace.py)。
+
 ## 配置文件
 
 [`config/csm_cfg_3.4mm.yaml`](/home/winslow/RII/CSM/config/csm_cfg_3.4mm.yaml) 包含机器人物理参数与控制参数，例如：

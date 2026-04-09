@@ -20,3 +20,22 @@ from .workspace_boundary_scan import (
     build_workspace_profiles,
     plot_workspace_profiles,
 )
+from .dexterous_workspace import (
+    AnalyticDexterousWorkspace,
+    AnalyticRegion,
+    DexterousMode3State,
+    DexterousParameters,
+    DexterousPlotOptions,
+    DexterousProbe,
+    FallbackScanResult,
+    analytic_fk_mode3,
+    bootstrap_position_reachable_state,
+    build_dexterous_probe,
+    clone_csm,
+    make_mode3_display_csm,
+    mode3_state_from_csm,
+    plot_dexterous_probe,
+    render_dexterous_figure,
+    save_probe_debug_figure,
+    scan_directions,
+)
