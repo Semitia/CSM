@@ -3,7 +3,7 @@ Analytic CI-1 dexterous-workspace approximation adapted into the project tree.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Optional
 
@@ -27,6 +27,16 @@ class AnalyticRegion:
     type1_world: np.ndarray
     type2_world: np.ndarray
     gamma: float
+    boundary_families_sym: list["AnalyticBoundaryFamily"] = field(default_factory=list)
+
+
+@dataclass
+class AnalyticBoundaryFamily:
+    family_id: str
+    points_sym: np.ndarray
+    primitive_type: str
+    fit_error: float
+    fit_meta: dict = field(default_factory=dict)
 
 
 class AnalyticDexterousWorkspace:
@@ -64,6 +74,124 @@ class AnalyticDexterousWorkspace:
         disc = max(disc, 0.0)
         s = math.sqrt(disc)
         return np.array([(-b + s) / (2.0 * a), (-b - s) / (2.0 * a)], dtype=float)
+
+    @staticmethod
+    def _fit_line_rmse(points: np.ndarray) -> tuple[float, dict]:
+        pts = np.asarray(points, dtype=float)
+        if pts.shape[0] < 2:
+            return float("inf"), {}
+        centroid = np.mean(pts, axis=0)
+        centered = pts - centroid
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+        tangent = vh[0]
+        normal = np.array([-tangent[1], tangent[0]], dtype=float)
+        normal /= max(float(np.linalg.norm(normal)), 1e-12)
+        residuals = centered @ normal
+        return float(np.sqrt(np.mean(residuals**2))), {
+            "centroid": centroid,
+            "tangent": tangent,
+            "normal": normal,
+            "offset": -float(normal @ centroid),
+        }
+
+    @staticmethod
+    def _fit_circle_rmse(points: np.ndarray) -> tuple[float, dict]:
+        pts = np.asarray(points, dtype=float)
+        if pts.shape[0] < 3:
+            return float("inf"), {}
+        x = pts[:, 0]
+        z = pts[:, 1]
+        A = np.column_stack([2.0 * x, 2.0 * z, np.ones_like(x)])
+        b = x**2 + z**2
+        try:
+            cx, cz, c0 = np.linalg.lstsq(A, b, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            return float("inf"), {}
+        radius = math.sqrt(max(cx * cx + cz * cz + c0, 0.0))
+        d = np.sqrt((x - cx) ** 2 + (z - cz) ** 2)
+        return float(np.sqrt(np.mean((d - radius) ** 2))), {
+            "center": np.array([cx, cz], dtype=float),
+            "radius": float(radius),
+        }
+
+    @staticmethod
+    def _fit_quadratic_rmse(points: np.ndarray) -> tuple[float, dict]:
+        pts = np.asarray(points, dtype=float)
+        if pts.shape[0] < 3:
+            return float("inf"), {}
+        centroid = np.mean(pts, axis=0)
+        centered = pts - centroid
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+        t_axis = vh[0]
+        n_axis = vh[1]
+        t = centered @ t_axis
+        n = centered @ n_axis
+        coef = np.polyfit(t, n, 2)
+        pred = np.polyval(coef, t)
+        return float(np.sqrt(np.mean((n - pred) ** 2))), {
+            "origin": centroid,
+            "t_axis": t_axis,
+            "n_axis": n_axis,
+            "coefficients": coef,
+        }
+
+    def _classify_boundary_family(
+        self,
+        family_id: str,
+        points: np.ndarray,
+        primitive_hint: str | None = None,
+    ) -> AnalyticBoundaryFamily:
+        pts = np.asarray(points, dtype=float)
+        if pts.size == 0:
+            return AnalyticBoundaryFamily(
+                family_id=family_id,
+                points_sym=np.zeros((0, 2), dtype=float),
+                primitive_type="empty",
+                fit_error=float("inf"),
+                fit_meta={},
+            )
+        if primitive_hint == "line":
+            rmse, meta = self._fit_line_rmse(pts)
+            return AnalyticBoundaryFamily(
+                family_id=family_id,
+                points_sym=pts,
+                primitive_type="line",
+                fit_error=rmse,
+                fit_meta={"hint": "line", **meta},
+            )
+
+        line_rmse, line_meta = self._fit_line_rmse(pts)
+        quad_rmse, quad_meta = self._fit_quadratic_rmse(pts)
+        circ_rmse, circ_meta = self._fit_circle_rmse(pts)
+        scores = {
+            "line": line_rmse,
+            "quadratic": quad_rmse,
+            "circle": circ_rmse,
+        }
+        primitive = min(scores, key=scores.get)
+        best = scores[primitive]
+
+        # Prefer the simpler primitive when it is nearly as good.
+        if primitive != "line" and line_rmse <= 1.15 * best + 1e-6:
+            primitive = "line"
+            best = line_rmse
+        elif primitive == "circle" and quad_rmse <= 1.10 * best + 1e-6:
+            primitive = "quadratic"
+            best = quad_rmse
+
+        meta = {
+            "scores": scores,
+            "line": line_meta,
+            "quadratic": quad_meta,
+            "circle": circ_meta,
+        }
+        return AnalyticBoundaryFamily(
+            family_id=family_id,
+            points_sym=pts,
+            primitive_type=primitive,
+            fit_error=float(best),
+            fit_meta=meta,
+        )
 
     def _line_segment_length_mm(self, length_mm: float, theta: float) -> float:
         if abs(theta) < 1e-8:
@@ -300,6 +428,15 @@ class AnalyticDexterousWorkspace:
         return self._dedupe_points(out_pts)
 
     def ci1_type1_boundaries(self, p_target_m: np.ndarray, n_samples: int = 600) -> np.ndarray:
+        b1, b2, b3, b4 = self.ci1_type1_boundary_families(p_target_m, n_samples=n_samples)
+        all_pts = np.vstack([x for x in [b1, b2, b3, b4] if x.size > 0]) if any(x.size > 0 for x in [b1, b2, b3, b4]) else np.zeros((0, 3))
+        return self._dedupe_points(all_pts)
+
+    def ci1_type1_boundary_families(
+        self,
+        p_target_m: np.ndarray,
+        n_samples: int = 600,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         A1, B1, C1 = self.ci1_line_coefficients(p_target_m, self.params.theta2_plus)
         b1 = self._line_disk_segment(A1, B1, C1, n_samples=max(100, n_samples // 3))
         if b1.size > 0:
@@ -311,8 +448,7 @@ class AnalyticDexterousWorkspace:
         b4 = self._ci1_boundary34_points(p_target_m, use_r1_limit=False, n_samples=n_samples)
         if b4.size > 0:
             b4 = b4[:, [0, 1, 3]]
-        all_pts = np.vstack([x for x in [b1, b2, b3, b4] if x.size > 0]) if any(x.size > 0 for x in [b1, b2, b3, b4]) else np.zeros((0, 3))
-        return self._dedupe_points(all_pts)
+        return b1, b2, b3, b4
 
     def ci1_feasible_area(self, p_target_m: np.ndarray, n_grid: int = 120) -> np.ndarray:
         p_s, _, _ = self.to_symmetry_frame(np.asarray(p_target_m, dtype=float), np.array([0.0, 0.0, 1.0], dtype=float))
@@ -411,10 +547,18 @@ class AnalyticDexterousWorkspace:
 
     def build_region(self, position_xyz_m: np.ndarray, n_boundary_samples: int = 280, n_area_samples: int = 120) -> AnalyticRegion:
         p_target = np.asarray(position_xyz_m, dtype=float)
+        b1, b2, b3, b4 = self.ci1_type1_boundary_families(p_target, n_samples=n_boundary_samples)
         type1_sym = self.ci1_type1_boundaries(p_target, n_samples=n_boundary_samples)
         type2_sym = self.ci1_type2_boundary(p_target, n_samples=max(45, n_boundary_samples // 6))
         feasible_area_sym = self.ci1_feasible_area(p_target, n_grid=n_area_samples)
         _, _, gamma = self.to_symmetry_frame(p_target, np.array([0.0, 0.0, 1.0], dtype=float))
+        boundary_families = [
+            self._classify_boundary_family("type1_b1", b1[:, :2] if b1.size else np.zeros((0, 2), dtype=float), primitive_hint="line"),
+            self._classify_boundary_family("type1_b2", b2[:, :2] if b2.size else np.zeros((0, 2), dtype=float)),
+            self._classify_boundary_family("type1_b3", b3[:, :2] if b3.size else np.zeros((0, 2), dtype=float)),
+            self._classify_boundary_family("type1_b4", b4[:, :2] if b4.size else np.zeros((0, 2), dtype=float)),
+            self._classify_boundary_family("type2", type2_sym[:, :2] if type2_sym.size else np.zeros((0, 2), dtype=float)),
+        ]
         return AnalyticRegion(
             feasible_area_sym=feasible_area_sym,
             feasible_area_world=self._map_projected_to_world(gamma, feasible_area_sym),
@@ -423,6 +567,7 @@ class AnalyticDexterousWorkspace:
             type1_world=self._map_projected_to_world(gamma, type1_sym[:, :2] if type1_sym.size else np.zeros((0, 2), dtype=float)),
             type2_world=self._map_projected_to_world(gamma, type2_sym[:, :2] if type2_sym.size else np.zeros((0, 2), dtype=float)),
             gamma=gamma,
+            boundary_families_sym=boundary_families,
         )
 
     @staticmethod

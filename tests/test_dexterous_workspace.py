@@ -88,3 +88,19 @@ def test_patch_geometry_lifts_to_both_symmetry_sides():
     y = geom["vertices_3d_world"][:, 1]
     assert np.any(y > 1e-6)
     assert np.any(y < -1e-6)
+
+
+def test_ci1_boundary_families_have_stable_classification():
+    csm = _build_csm()
+    point = np.array([10.87, 10.28, 29.77], dtype=float) / 1000.0
+    probe = build_dexterous_probe(point, csm=csm, config="3mm", method="analytic")
+    families = {fam.family_id: fam for fam in (probe.boundary_families_sym or [])}
+    assert "type1_b1" in families
+    assert families["type1_b1"].primitive_type == "line"
+    assert families["type1_b1"].fit_error < 1e-8
+    nonlinears = [
+        fam
+        for key, fam in families.items()
+        if key != "type1_b1" and fam.points_sym.size and fam.primitive_type != "line"
+    ]
+    assert nonlinears

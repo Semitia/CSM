@@ -12,7 +12,12 @@ from csm import CSM, DexterousPlotOptions, build_dexterous_probe, render_dextero
 
 DEFAULT_PROBES_MM = [
     [16.32, 2.14, 29.28],
+    # [0,0,35],
+    [2.63,0,35],
+    [26.75,0,22.82],
+    [20,0,14]
 ]
+DEFAULT_DEBUG_OUTPUT_DIR = Path("data/dexterous_debug_patch")
 
 
 def _parse_points(text: str):
@@ -37,7 +42,19 @@ def main() -> None:
     parser.add_argument("--method", default="analytic", choices=["analytic", "fallback"], help="Probe-building method.")
     parser.add_argument("--validate-with-fallback", action="store_true", help="Run fallback validation after analytic build.")
     parser.add_argument("--hide", action="store_true", help="Do not show the matplotlib window.")
-    parser.add_argument("--debug-output-dir", default=None, help="Optional directory for debug png/json outputs.")
+    parser.add_argument(
+        "--display-frame",
+        default="local",
+        choices=["local", "world"],
+        help="Render probes in their local unit-sphere frame or mapped back into world coordinates.",
+    )
+    parser.add_argument("--show-robot", action="store_true", help="Overlay the robot in world-frame renders.")
+    parser.add_argument(
+        "--debug-output-dir",
+        default=str(DEFAULT_DEBUG_OUTPUT_DIR),
+        help="Directory for debug png/json outputs. Files with the same probe label will be overwritten.",
+    )
+    parser.add_argument("--no-debug", action="store_true", help="Disable debug png/json outputs.")
     args = parser.parse_args()
 
     csm = CSM.from_config(Path(args.config))
@@ -55,16 +72,22 @@ def main() -> None:
             )
         )
 
+    debug_output_dir = None if args.no_debug or args.debug_output_dir in {None, ""} else Path(args.debug_output_dir)
     render_dexterous_figure(
         probes,
         csm=csm,
         options=DexterousPlotOptions(
             output_path=Path(args.output),
             show_figure=not args.hide,
-            save_debug_figure=args.debug_output_dir is not None,
-            debug_output_dir=None if args.debug_output_dir is None else Path(args.debug_output_dir),
+            display_frame=args.display_frame,
+            show_robot=args.show_robot,
+            save_debug_figure=debug_output_dir is not None,
+            debug_output_dir=debug_output_dir,
         ),
     )
+
+    if debug_output_dir is not None:
+        print(f"Debug output dir: {debug_output_dir.resolve()}")
 
     for probe in probes:
         dbg = probe.debug_data or {}

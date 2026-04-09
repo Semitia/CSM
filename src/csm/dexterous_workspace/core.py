@@ -35,6 +35,7 @@ class DexterousProbe:
     cap_fit_error: float | None = None
     fallback_scan: FallbackScanResult | None = None
     debug_data: dict | None = None
+    boundary_families_sym: list | None = None
 
 
 def _fit_spherical_cap(directions_world: np.ndarray) -> tuple[np.ndarray | None, float | None, float | None]:
@@ -55,6 +56,7 @@ def _fit_spherical_cap(directions_world: np.ndarray) -> tuple[np.ndarray | None,
 def _build_debug_data(
     *,
     probe_position: np.ndarray,
+    position_sym: np.ndarray | None,
     feasible_world: np.ndarray,
     feasible_sym: np.ndarray,
     type1_sym: np.ndarray,
@@ -70,9 +72,19 @@ def _build_debug_data(
     cap_fit_error: float | None,
     render_use_cap: bool,
     fallback_scan_result: FallbackScanResult | None,
+    boundary_families_sym,
+    analytic_line_coefficients: tuple[float, float, float] | None,
 ) -> dict:
+    p_sym = None if position_sym is None else np.asarray(position_sym, dtype=float).copy()
+    is_boundary_only = bool(len(feasible_sym) == 0 and len(type1_sym) > 0 and len(type2_sym) == 0)
+    axis_degenerate = bool(
+        p_sym is not None
+        and abs(float(p_sym[0])) <= 1e-8
+        and is_boundary_only
+    )
     debug_data = {
         "position_xyz": np.asarray(probe_position, dtype=float).copy(),
+        "position_sym": p_sym,
         "feasible_count_world": int(len(feasible_world)),
         "feasible_count_sym": int(len(feasible_sym)),
         "type1_boundary_count_sym": int(len(type1_sym)),
@@ -97,7 +109,30 @@ def _build_debug_data(
         "cap_fit_error_rad": None if cap_fit_error is None else float(cap_fit_error),
         "cap_fit_error_deg": None if cap_fit_error is None else float(np.degrees(cap_fit_error)),
         "fit_used_as_cap": bool(render_use_cap),
+        "is_boundary_only": is_boundary_only,
+        "axis_degenerate_case": axis_degenerate,
+        "degeneracy_reason": (
+            "symmetry-axis boundary-only case: feasible set collapsed from 2D region to 1D boundary"
+            if axis_degenerate
+            else None
+        ),
+        "analytic_line_coefficients": None if analytic_line_coefficients is None else {
+            "A": float(analytic_line_coefficients[0]),
+            "B": float(analytic_line_coefficients[1]),
+            "C": float(analytic_line_coefficients[2]),
+        },
         "fallback": None,
+        "boundary_families": [
+            {
+                "family_id": fam.family_id,
+                "primitive_type": fam.primitive_type,
+                "fit_error": float(fam.fit_error),
+                "point_count": int(len(fam.points_sym)),
+                "scores": fam.fit_meta.get("scores", {}) if isinstance(fam.fit_meta, dict) else {},
+            }
+            for fam in (boundary_families_sym or [])
+            if getattr(fam, "points_sym", np.zeros((0, 2))).size
+        ],
     }
     if fallback_scan_result is not None:
         debug_data["fallback"] = {
@@ -135,8 +170,12 @@ def build_dexterous_probe(
     gamma = 0.0
     status = "unreachable"
     fallback_scan_result = None
+    boundary_families_sym = []
+    position_sym = None
+    analytic_line_coefficients = None
 
     if method == "analytic":
+        position_sym, _, _ = analytic.to_symmetry_frame(probe_position, np.array([0.0, 0.0, 1.0], dtype=float))
         region = analytic.build_region(probe_position)
         feasible_world = region.feasible_area_world
         feasible_sym = region.feasible_area_sym
@@ -145,6 +184,8 @@ def build_dexterous_probe(
         type1_world = region.type1_world
         type2_world = region.type2_world
         gamma = region.gamma
+        boundary_families_sym = region.boundary_families_sym
+        analytic_line_coefficients = analytic.ci1_line_coefficients(probe_position, params.theta2_plus)
         status = "analytic_ok" if feasible_world.size else "analytic_empty"
     elif method == "fallback":
         fallback_scan_result = scan_directions(csm, probe_position, n_directions=fallback_direction_samples)
@@ -193,8 +234,10 @@ def build_dexterous_probe(
         cap_angular_radius=cap_angular_radius,
         cap_fit_error=cap_fit_error,
         fallback_scan=fallback_scan_result,
+        boundary_families_sym=boundary_families_sym,
         debug_data=_build_debug_data(
             probe_position=probe_position,
+            position_sym=position_sym,
             feasible_world=feasible_world,
             feasible_sym=feasible_sym,
             type1_sym=type1_sym,
@@ -210,5 +253,7 @@ def build_dexterous_probe(
             cap_fit_error=cap_fit_error,
             render_use_cap=render_use_cap,
             fallback_scan_result=fallback_scan_result,
+            boundary_families_sym=boundary_families_sym,
+            analytic_line_coefficients=analytic_line_coefficients,
         ),
     )

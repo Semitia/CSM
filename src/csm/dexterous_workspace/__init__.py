@@ -1,7 +1,7 @@
 """
 Local dexterous-workspace helpers for the project's 3mm/mode3 workflow.
 """
-from .analytic import AnalyticDexterousWorkspace, AnalyticRegion
+from .analytic import AnalyticBoundaryFamily, AnalyticDexterousWorkspace, AnalyticRegion
 from .core import DexterousProbe, build_dexterous_probe
 from .fallback import FallbackScanResult, bootstrap_position_reachable_state, scan_directions
 from .kinematics import (
@@ -16,6 +16,7 @@ from .plotting import DexterousPlotOptions, plot_dexterous_probe, render_dextero
 
 __all__ = [
     "AnalyticDexterousWorkspace",
+    "AnalyticBoundaryFamily",
     "AnalyticRegion",
     "DexterousMode3State",
     "DexterousParameters",

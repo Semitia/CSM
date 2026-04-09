@@ -29,6 +29,8 @@ class DexterousPlotOptions:
     sphere_color: str = "#57E36D"
     patch_color: str = "#C329B8"
     robot_colors: tuple[str, str, str] = ("#1E40AF", "#22C55E", "#DC2626")
+    display_frame: str = "local"
+    show_robot: bool = False
     elev: float = 17.0
     azim: float = -58.0
     save_debug_figure: bool = False
@@ -43,6 +45,9 @@ class DexterousPlotOptions:
     boundary_circle_tol: float = 0.025
     hull_arc_tol: float = 0.03
     line_simplify_tol: float = 0.01
+    family_min_points: int = 6
+    family_hull_tolerance: float = 0.02
+    analytic_fill_min_coverage: float = 0.995
 
 
 def _orthonormal_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -68,6 +73,48 @@ def _set_equal_3d_axes(ax, all_points: np.ndarray, pad: float = 0.006) -> None:
     ax.set_ylim(center[1] - half, center[1] + half)
     ax.set_zlim(center[2] - half, center[2] + half)
     ax.set_box_aspect((1.0, 1.0, 1.0))
+
+
+def _probe_display_center(probe, options: DexterousPlotOptions) -> np.ndarray:
+    if options.display_frame == "world":
+        return np.asarray(probe.position_xyz, dtype=float)
+    return np.zeros(3, dtype=float)
+
+
+def _probe_axis_labels(options: DexterousPlotOptions) -> tuple[str, str, str]:
+    if options.display_frame == "world":
+        return "X [m]", "Y [m]", "Z [m]"
+    return "a_x", "a_y", "a_z"
+
+
+def _local_patch_vertices_from_world(probe, vertices_world: np.ndarray) -> np.ndarray:
+    verts = np.asarray(vertices_world, dtype=float)
+    gamma = float(probe.gamma)
+    R_sw = np.array(
+        [
+            [math.cos(gamma), math.sin(gamma), 0.0],
+            [-math.sin(gamma), math.cos(gamma), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    return (R_sw @ verts.T).T
+
+
+def _local_directions_from_world(probe, directions_world: np.ndarray) -> np.ndarray:
+    dirs = np.asarray(directions_world, dtype=float)
+    if dirs.size == 0:
+        return dirs.reshape(0, 3)
+    gamma = float(probe.gamma)
+    R_sw = np.array(
+        [
+            [math.cos(gamma), math.sin(gamma), 0.0],
+            [-math.sin(gamma), math.cos(gamma), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    return (R_sw @ dirs.T).T
 
 
 def _plot_base_sphere(ax, center: np.ndarray, radius: float, color: str, alpha: float) -> None:
@@ -272,6 +319,65 @@ def _sample_polyline(vertices: np.ndarray, samples_per_seg: int = 48) -> np.ndar
     return np.vstack(parts)
 
 
+def _intersect_line_quadratic(line_family, quad_family) -> np.ndarray | None:
+    normal = np.asarray(line_family.fit_meta.get("normal"), dtype=float)
+    offset = float(line_family.fit_meta.get("offset"))
+    qmeta = quad_family.fit_meta.get("quadratic", {})
+    origin = np.asarray(qmeta.get("origin"), dtype=float)
+    t_axis = np.asarray(qmeta.get("t_axis"), dtype=float)
+    n_axis = np.asarray(qmeta.get("n_axis"), dtype=float)
+    coef = np.asarray(qmeta.get("coefficients"), dtype=float)
+    if normal.size != 2 or origin.size != 2 or t_axis.size != 2 or n_axis.size != 2 or coef.size != 3:
+        return None
+    qa = float(normal @ n_axis) * float(coef[0])
+    qb = float(normal @ t_axis) + float(normal @ n_axis) * float(coef[1])
+    qc = float(normal @ origin) + float(normal @ n_axis) * float(coef[2]) + offset
+    roots = np.roots([qa, qb, qc]) if abs(qa) > 1e-12 else np.roots([qb, qc])
+    candidates = []
+    for root in roots:
+        if abs(root.imag) > 1e-8:
+            continue
+        t = float(root.real)
+        n = float(np.polyval(coef, t))
+        pt = origin + t * t_axis + n * n_axis
+        candidates.append(pt)
+    if not candidates:
+        return None
+    candidates = np.asarray(candidates, dtype=float)
+    line_pts = np.asarray(line_family.points_sym, dtype=float)
+    quad_pts = np.asarray(quad_family.points_sym, dtype=float)
+    d = (
+        np.min(np.linalg.norm(candidates[:, None, :] - line_pts[None, :, :], axis=2), axis=1)
+        + np.min(np.linalg.norm(candidates[:, None, :] - quad_pts[None, :, :], axis=2), axis=1)
+    )
+    return candidates[int(np.argmin(d))]
+
+
+def _point_segment_distances(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    points = np.asarray(points, dtype=float)
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    ab = b - a
+    denom = float(ab @ ab)
+    if denom < 1e-12:
+        return np.linalg.norm(points - a[None, :], axis=1)
+    t = ((points - a[None, :]) @ ab) / denom
+    t = np.clip(t, 0.0, 1.0)
+    proj = a[None, :] + t[:, None] * ab[None, :]
+    return np.linalg.norm(points - proj, axis=1)
+
+
+def _point_polyline_distances(points: np.ndarray, polyline: np.ndarray) -> np.ndarray:
+    pts = np.asarray(points, dtype=float)
+    poly = np.asarray(polyline, dtype=float)
+    if poly.shape[0] < 2:
+        return np.full(len(pts), np.inf, dtype=float)
+    dmin = np.full(len(pts), np.inf, dtype=float)
+    for i in range(poly.shape[0] - 1):
+        dmin = np.minimum(dmin, _point_segment_distances(pts, poly[i], poly[i + 1]))
+    return dmin
+
+
 def _longest_true_run(mask: np.ndarray) -> tuple[int, int] | None:
     if not np.any(mask):
         return None
@@ -298,6 +404,99 @@ def _extract_circular_slice(points: np.ndarray, start: int, end: int) -> np.ndar
     if start <= end:
         return points[start : end + 1]
     return np.vstack([points[start:], points[: end + 1]])
+
+
+def _family_param_values(family, points: np.ndarray) -> np.ndarray:
+    pts = np.asarray(points, dtype=float)
+    if family.primitive_type == "line":
+        tangent = np.asarray(family.fit_meta.get("tangent"), dtype=float)
+        centroid = np.asarray(family.fit_meta.get("centroid"), dtype=float)
+        return (pts - centroid[None, :]) @ tangent
+    if family.primitive_type == "quadratic":
+        origin = np.asarray(family.fit_meta.get("quadratic", {}).get("origin"), dtype=float)
+        t_axis = np.asarray(family.fit_meta.get("quadratic", {}).get("t_axis"), dtype=float)
+        return (pts - origin[None, :]) @ t_axis
+    return np.arange(len(pts), dtype=float)
+
+
+def _sample_family_primitive(family, n_samples: int = 400) -> np.ndarray:
+    pts = np.asarray(family.points_sym, dtype=float)
+    if pts.shape[0] < 2:
+        return pts
+    if family.primitive_type == "line":
+        params = _family_param_values(family, pts)
+        t0 = float(np.min(params))
+        t1 = float(np.max(params))
+        tangent = np.asarray(family.fit_meta.get("tangent"), dtype=float)
+        centroid = np.asarray(family.fit_meta.get("centroid"), dtype=float)
+        tt = np.linspace(t0, t1, n_samples)
+        return centroid[None, :] + tt[:, None] * tangent[None, :]
+    if family.primitive_type == "quadratic":
+        meta = family.fit_meta.get("quadratic", {})
+        origin = np.asarray(meta.get("origin"), dtype=float)
+        t_axis = np.asarray(meta.get("t_axis"), dtype=float)
+        n_axis = np.asarray(meta.get("n_axis"), dtype=float)
+        coef = np.asarray(meta.get("coefficients"), dtype=float)
+        params = _family_param_values(family, pts)
+        t0 = float(np.min(params))
+        t1 = float(np.max(params))
+        tt = np.linspace(t0, t1, n_samples)
+        nn = np.polyval(coef, tt)
+        return origin[None, :] + tt[:, None] * t_axis[None, :] + nn[:, None] * n_axis[None, :]
+    if family.primitive_type == "circle":
+        meta = family.fit_meta.get("circle", {})
+        center = np.asarray(meta.get("center"), dtype=float)
+        radius = float(meta.get("radius"))
+        if center.size != 2 or not np.isfinite(radius) or radius <= 1e-10:
+            return pts
+        angles = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
+        order = np.argsort(np.unwrap(angles))
+        angles = angles[order]
+        a0 = float(angles[0])
+        a1 = float(angles[-1])
+        aa = np.linspace(a0, a1, n_samples)
+        return np.column_stack([center[0] + radius * np.cos(aa), center[1] + radius * np.sin(aa)])
+    return pts
+
+
+def _extract_family_segment_near_hull(family, hull_pts: np.ndarray, options: DexterousPlotOptions) -> np.ndarray:
+    samples = _sample_family_primitive(family, n_samples=max(220, len(family.points_sym) * 8))
+    if samples.shape[0] < 2:
+        return np.zeros((0, 2), dtype=float)
+    d = _point_polyline_distances(samples, np.vstack([hull_pts, hull_pts[:1]]))
+    on_hull = d <= options.family_hull_tolerance
+    if not np.any(on_hull):
+        return np.zeros((0, 2), dtype=float)
+    idx = np.flatnonzero(on_hull)
+    splits = np.where(np.diff(idx) > 1)[0] + 1
+    runs = np.split(idx, splits)
+    best = max(runs, key=len)
+    seg = samples[best]
+    return _dedupe_rows(seg, eps=5e-5)
+
+
+def _split_family_endpoints_by_circle(segment: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    seg = np.asarray(segment, dtype=float)
+    r0 = float(np.linalg.norm(seg[0]))
+    r1 = float(np.linalg.norm(seg[-1]))
+    if abs(r0 - 1.0) <= abs(r1 - 1.0):
+        return seg[0], seg[-1]
+    return seg[-1], seg[0]
+
+
+def _orient_segment(segment: np.ndarray, start_hint: np.ndarray | None, end_hint: np.ndarray | None = None) -> np.ndarray:
+    seg = np.asarray(segment, dtype=float)
+    if seg.shape[0] < 2:
+        return seg
+    if start_hint is not None:
+        start_hint = np.asarray(start_hint, dtype=float)
+        if np.linalg.norm(seg[-1] - start_hint) < np.linalg.norm(seg[0] - start_hint):
+            seg = seg[::-1]
+    if end_hint is not None:
+        end_hint = np.asarray(end_hint, dtype=float)
+        if np.linalg.norm(seg[-1] - end_hint) > np.linalg.norm(seg[0] - end_hint):
+            seg = seg[::-1]
+    return seg
 
 
 def _sort_open_path(points: np.ndarray, start_hint: np.ndarray | None = None, end_hint: np.ndarray | None = None) -> np.ndarray:
@@ -337,15 +536,32 @@ def _triangulate_planar_region(boundary: np.ndarray, interior_points: np.ndarray
         interior = interior.reshape(-1, 2)
     if interior.size:
         poly = MplPath(polygon, closed=True)
-        keep = poly.contains_points(interior, radius=-1e-6)
+        keep = poly.contains_points(interior, radius=1e-5)
         interior = _dedupe_rows(interior[keep], eps=5e-5)
     vertices_2d = polygon if interior.size == 0 else np.vstack([polygon, interior])
     tri = mtri.Triangulation(vertices_2d[:, 0], vertices_2d[:, 1])
     triangles = tri.triangles
     poly = MplPath(polygon, closed=True)
-    centroids = np.mean(vertices_2d[triangles], axis=1)
-    keep = poly.contains_points(centroids, radius=-1e-6)
+    tri_vertices = vertices_2d[triangles]
+    flat_vertices = tri_vertices.reshape(-1, 2)
+    inside = poly.contains_points(flat_vertices, radius=1e-5).reshape(-1, 3)
+    # Keep triangles as long as all vertices are on/inside the boundary,
+    # which avoids shaving away a visible strip near the contour.
+    keep = np.all(inside, axis=1)
+    if not np.any(keep):
+        centroids = np.mean(vertices_2d[triangles], axis=1)
+        keep = poly.contains_points(centroids, radius=1e-5)
     return vertices_2d, triangles[keep]
+
+
+def _polygon_coverage_fraction(boundary: np.ndarray, sample_points: np.ndarray) -> float:
+    polygon = np.asarray(boundary, dtype=float)
+    pts = np.asarray(sample_points, dtype=float)
+    if polygon.shape[0] < 3 or pts.shape[0] == 0:
+        return 0.0
+    poly = MplPath(polygon, closed=True)
+    inside = poly.contains_points(pts, radius=-1e-6)
+    return float(np.count_nonzero(inside)) / float(len(pts))
 
 
 def _lift_patch_vertices_to_world(vertices_2d: np.ndarray, triangles: np.ndarray, gamma: float) -> tuple[np.ndarray, np.ndarray]:
@@ -371,6 +587,37 @@ def _lift_patch_vertices_to_world(vertices_2d: np.ndarray, triangles: np.ndarray
     return vertices_3d_world, triangles_dual
 
 
+def _build_patch_geometry_from_feasible_hull(
+    probe,
+    points: np.ndarray,
+) -> dict:
+    pts = np.asarray(points, dtype=float)
+    if pts.shape[0] < 8:
+        return {}
+    try:
+        hull = ConvexHull(pts)
+    except Exception:
+        return {}
+    contour = pts[hull.vertices]
+    vertices_2d, triangles_2d = _triangulate_planar_region(contour, pts)
+    if vertices_2d.shape[0] < 3 or triangles_2d.shape[0] == 0:
+        return {}
+    vertices_3d_world, triangles = _lift_patch_vertices_to_world(vertices_2d, triangles_2d, float(probe.gamma))
+    return {
+        "mask": np.zeros((0, 0), dtype=bool),
+        "xs": np.array([], dtype=float),
+        "zs": np.array([], dtype=float),
+        "contour_raw": contour,
+        "contour_smooth": contour,
+        "vertices_2d": vertices_2d,
+        "triangles_2d": triangles_2d,
+        "vertices_3d_world": vertices_3d_world,
+        "triangles": triangles,
+        "method": "feasible_hull",
+        "coverage": 1.0,
+    }
+
+
 def _build_patch_geometry_from_boundary_families(
     probe,
     options: DexterousPlotOptions,
@@ -394,55 +641,75 @@ def _build_patch_geometry_from_boundary_families(
     poly_hull = _extract_circular_slice(hull_pts, arc_end_idx, arc_start_idx)
     if arc_hull.shape[0] < 2 or poly_hull.shape[0] < 3:
         return {}
-
-    keep_idx = _rdp_indices(poly_hull, options.line_simplify_tol)
-    keep_idx = np.unique(keep_idx)
-    if keep_idx[0] != 0:
-        keep_idx = np.concatenate([[0], keep_idx])
-    if keep_idx[-1] != poly_hull.shape[0] - 1:
-        keep_idx = np.concatenate([keep_idx, [poly_hull.shape[0] - 1]])
-    if keep_idx.size < 3:
-        return {}
-
-    segment_normals: list[np.ndarray] = []
-    segment_offsets: list[float] = []
-    for i0, i1 in zip(keep_idx[:-1], keep_idx[1:]):
-        raw_seg = poly_hull[i0 : i1 + 1]
-        if raw_seg.shape[0] < 2:
+    families = {
+        fam.family_id: fam
+        for fam in (probe.boundary_families_sym or [])
+        if getattr(fam, "points_sym", np.zeros((0, 2))).shape[0] >= options.family_min_points and fam.primitive_type != "empty"
+    }
+    family_segments = {}
+    circle_touch_families: list[tuple[str, np.ndarray, np.ndarray]] = []
+    for family_id, fam in families.items():
+        seg = _extract_family_segment_near_hull(fam, hull_pts, options)
+        if seg.shape[0] < 2:
             continue
-        normal, offset = _fit_line_hesse(raw_seg)
-        segment_normals.append(normal)
-        segment_offsets.append(offset)
-    if len(segment_normals) < 2:
-        return {}
+        family_segments[family_id] = seg
+        circle_pt, inner_pt = _split_family_endpoints_by_circle(seg)
+        if abs(np.linalg.norm(circle_pt) - 1.0) <= options.hull_arc_tol + options.family_hull_tolerance:
+            circle_touch_families.append((family_id, circle_pt, inner_pt))
 
-    poly_vertices = []
-    start_intersection = _intersect_line_unit_circle(segment_normals[0], segment_offsets[0], poly_hull[0])
-    end_intersection = _intersect_line_unit_circle(segment_normals[-1], segment_offsets[-1], poly_hull[-1])
-    if start_intersection is None or end_intersection is None:
-        return {}
-    poly_vertices.append(start_intersection)
-    for idx in range(len(segment_normals) - 1):
-        corner = _intersect_lines(
-            segment_normals[idx],
-            segment_offsets[idx],
-            segment_normals[idx + 1],
-            segment_offsets[idx + 1],
+    if len(circle_touch_families) >= 2:
+        circle_touch_families.sort(key=lambda item: math.atan2(item[1][1], item[1][0]))
+        start_id, start_circle, _ = circle_touch_families[0]
+        end_id, end_circle, _ = circle_touch_families[-1]
+        start_family = families[start_id]
+        end_family = families[end_id]
+        start_seg = family_segments[start_id]
+        end_seg = family_segments[end_id]
+        start_seg = _orient_segment(start_seg, start_circle)
+        end_seg = _orient_segment(end_seg, end_circle)
+        joint = None
+        if start_family.primitive_type == "quadratic" and end_family.primitive_type == "line":
+            joint = _intersect_line_quadratic(end_family, start_family)
+        elif start_family.primitive_type == "line" and end_family.primitive_type == "quadratic":
+            joint = _intersect_line_quadratic(start_family, end_family)
+        if joint is None:
+            dmat = np.linalg.norm(start_seg[:, None, :] - end_seg[None, :, :], axis=2)
+            i, j = np.unravel_index(int(np.argmin(dmat)), dmat.shape)
+            joint = 0.5 * (start_seg[i] + end_seg[j])
+        arc_points = _sample_unit_arc(
+            end_circle / np.linalg.norm(end_circle),
+            start_circle / np.linalg.norm(start_circle),
+            n_samples=max(64, arc_hull.shape[0] * 12),
         )
-        if corner is None:
+        boundary = np.vstack([
+            arc_points,
+            start_seg[1:],
+            joint[None, :],
+            end_seg[::-1][1:],
+            arc_points[:1],
+        ])
+    else:
+        keep_idx = _rdp_indices(poly_hull, options.line_simplify_tol)
+        keep_idx = np.unique(keep_idx)
+        if keep_idx[0] != 0:
+            keep_idx = np.concatenate([[0], keep_idx])
+        if keep_idx[-1] != poly_hull.shape[0] - 1:
+            keep_idx = np.concatenate([keep_idx, [poly_hull.shape[0] - 1]])
+        if keep_idx.size < 3:
             return {}
-        poly_vertices.append(corner)
-    poly_vertices.append(end_intersection)
-    poly_vertices = np.asarray(poly_vertices, dtype=float)
-
-    arc_start = end_intersection
-    arc_end = start_intersection
-    arc_points = _sample_unit_arc(arc_start, arc_end, n_samples=max(64, arc_hull.shape[0] * 12))
-    poly_points = _sample_polyline(poly_vertices, samples_per_seg=56)
-    boundary = np.vstack([arc_points, poly_points[1:-1], arc_points[:1]])
+        poly_points = poly_hull[keep_idx]
+        arc_start = poly_points[-1]
+        arc_end = poly_points[0]
+        arc_points = _sample_unit_arc(arc_start / np.linalg.norm(arc_start), arc_end / np.linalg.norm(arc_end), n_samples=max(64, arc_hull.shape[0] * 12))
+        boundary = np.vstack([arc_points, poly_points[1:-1], arc_points[:1]])
+    coverage = _polygon_coverage_fraction(boundary, feasible)
     interior_stride = max(1, feasible.shape[0] // 2400)
     vertices_2d, triangles = _triangulate_planar_region(boundary, feasible[::interior_stride])
     vertices_3d_world, triangles_3d = _lift_patch_vertices_to_world(vertices_2d, triangles, float(probe.gamma))
+    if coverage < options.analytic_fill_min_coverage:
+        hull_geom = _build_patch_geometry_from_feasible_hull(probe, feasible)
+        if hull_geom:
+            return hull_geom
     return {
         "mask": np.zeros((0, 0), dtype=bool),
         "xs": np.array([], dtype=float),
@@ -454,6 +721,7 @@ def _build_patch_geometry_from_boundary_families(
         "vertices_3d_world": vertices_3d_world,
         "triangles": triangles_3d,
         "method": "analytic_boundary",
+        "coverage": coverage,
     }
 
 
@@ -478,7 +746,6 @@ def _build_patch_geometry_from_symmetry_region(
             "vertices_3d_world": np.zeros((0, 3), dtype=float),
             "triangles": np.zeros((0, 3), dtype=int),
         }
-
     xs = np.linspace(-1.0, 1.0, options.region_grid_n)
     zs = np.linspace(-1.0, 1.0, options.region_grid_n)
     X, Z = np.meshgrid(xs, zs, indexing="ij")
@@ -528,6 +795,7 @@ def _build_patch_geometry_from_symmetry_region(
     keep = poly.contains_points(centroids, radius=-1e-6)
     triangles = triangles[keep]
 
+    triangles_2d = triangles.copy()
     vertices_3d_world, triangles = _lift_patch_vertices_to_world(vertices_2d, triangles, float(probe.gamma))
     return {
         "mask": mask,
@@ -536,10 +804,11 @@ def _build_patch_geometry_from_symmetry_region(
         "contour_raw": contour_raw,
         "contour_smooth": contour_smooth,
         "vertices_2d": vertices_2d,
-        "triangles_2d": triangles,
+        "triangles_2d": triangles_2d,
         "vertices_3d_world": vertices_3d_world,
         "triangles": triangles,
         "method": "raster_mask",
+        "coverage": 1.0,
     }
 
 
@@ -572,6 +841,27 @@ def _plot_point_cloud(ax, center: np.ndarray, radius: float, directions_world: n
     ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=size, color=color, alpha=alpha)
 
 
+def _plot_boundary_curve_world(
+    ax,
+    center: np.ndarray,
+    radius: float,
+    directions_world: np.ndarray,
+    color: str,
+    alpha: float,
+    linewidth: float = 2.4,
+) -> None:
+    dirs = np.asarray(directions_world, dtype=float)
+    if dirs.shape[0] < 2:
+        return
+    centroid = np.mean(dirs, axis=0)
+    centroid /= max(float(np.linalg.norm(centroid)), 1e-12)
+    bx, by = _orthonormal_basis(centroid)
+    angles = np.arctan2(dirs @ by, dirs @ bx)
+    order = np.argsort(np.unwrap(angles))
+    points = center[None, :] + radius * dirs[order]
+    ax.plot(points[:, 0], points[:, 1], points[:, 2], color=color, alpha=alpha, linewidth=linewidth)
+
+
 def _plot_robot(ax, csm: CSM, probe_state: DexterousMode3State | None, colors: tuple[str, str, str]) -> None:
     if probe_state is None:
         return
@@ -598,45 +888,79 @@ def _plot_robot(ax, csm: CSM, probe_state: DexterousMode3State | None, colors: t
 
 def plot_dexterous_probe(ax, probe, *, csm: CSM | None = None, options: DexterousPlotOptions | None = None) -> None:
     options = options or DexterousPlotOptions()
-    center = np.asarray(probe.position_xyz, dtype=float)
-    _plot_base_sphere(ax, center, float(probe.sphere_radius_m), options.sphere_color, options.sphere_alpha)
+    center = _probe_display_center(probe, options)
     patch_geom = _build_patch_geometry_from_symmetry_region(probe, options)
+    patch_vertices = patch_geom["vertices_3d_world"]
+    feasible_dirs = np.asarray(probe.feasible_directions_world, dtype=float)
+    boundary_dirs = np.asarray(probe.type1_boundary_world, dtype=float)
+    cap_center = None if probe.cap_center_world is None else np.asarray(probe.cap_center_world, dtype=float)
+    if options.display_frame == "local":
+        if patch_vertices.size:
+            patch_vertices = _local_patch_vertices_from_world(probe, patch_vertices)
+        if feasible_dirs.size:
+            feasible_dirs = _local_directions_from_world(probe, feasible_dirs)
+        if boundary_dirs.size:
+            boundary_dirs = _local_directions_from_world(probe, boundary_dirs)
+        if cap_center is not None:
+            cap_center = _local_directions_from_world(probe, cap_center.reshape(1, 3))[0]
+    boundary_only = bool((probe.debug_data or {}).get("is_boundary_only"))
+    _plot_base_sphere(ax, center, float(probe.sphere_radius_m), options.sphere_color, options.sphere_alpha)
     use_cap = (
-        probe.cap_center_world is not None
+        cap_center is not None
         and probe.cap_angular_radius is not None
         and probe.cap_fit_error is not None
         and np.degrees(probe.cap_fit_error) <= options.use_cap_if_fit_below_deg
     )
     if use_cap and options.prefer_cap_over_patch:
-        _plot_cap(ax, center, probe.cap_center_world, probe.cap_angular_radius, float(probe.sphere_radius_m), options.patch_color, options.patch_alpha)
-    elif patch_geom["vertices_3d_world"].shape[0] >= 3 and patch_geom["triangles"].shape[0] > 0:
+        _plot_cap(ax, center, cap_center, probe.cap_angular_radius, float(probe.sphere_radius_m), options.patch_color, options.patch_alpha)
+    elif patch_vertices.shape[0] >= 3 and patch_geom["triangles"].shape[0] > 0:
         _plot_patch_mesh(
             ax,
             center,
             float(probe.sphere_radius_m),
-            patch_geom["vertices_3d_world"],
+            patch_vertices,
             patch_geom["triangles"],
             options.patch_color,
             options.patch_alpha,
         )
-    elif probe.feasible_directions_world.shape[0] >= 3:
-        _plot_patch(ax, center, float(probe.sphere_radius_m), probe.feasible_directions_world, options.patch_color, options.patch_alpha)
-    if csm is not None:
+    elif boundary_only and boundary_dirs.shape[0] >= 2:
+        _plot_boundary_curve_world(
+            ax,
+            center,
+            float(probe.sphere_radius_m),
+            boundary_dirs,
+            options.patch_color,
+            max(options.patch_alpha, 0.85),
+            linewidth=2.8,
+        )
+    elif feasible_dirs.shape[0] >= 3:
+        _plot_patch(ax, center, float(probe.sphere_radius_m), feasible_dirs, options.patch_color, options.patch_alpha)
+    if csm is not None and options.show_robot and options.display_frame == "world":
         _plot_robot(ax, csm, probe.display_state, options.robot_colors)
 
     all_points = [center[None, :]]
-    if probe.feasible_directions_world.size:
-        all_points.append(center[None, :] + probe.sphere_radius_m * probe.feasible_directions_world)
-    if csm is not None and probe.display_state is not None:
+    if feasible_dirs.size:
+        all_points.append(center[None, :] + probe.sphere_radius_m * feasible_dirs)
+    if boundary_only and boundary_dirs.size:
+        all_points.append(center[None, :] + probe.sphere_radius_m * boundary_dirs)
+    if csm is not None and options.show_robot and options.display_frame == "world" and probe.display_state is not None:
         display_csm = make_mode3_display_csm(csm, probe.display_state)
         vis = display_csm.get_visualization_segments(arc_points=28, straight_points=6)
         for seg in vis["segments"]:
             all_points.append(np.asarray(seg["points"], dtype=float))
         all_points.append(np.asarray([vis["tool"]["start"], vis["tool"]["end"]], dtype=float))
-    _set_equal_3d_axes(ax, np.vstack(all_points))
-    ax.set_xlabel("X [m]")
-    ax.set_ylabel("Y [m]")
-    ax.set_zlabel("Z [m]")
+    if options.display_frame == "local":
+        local_half = float(probe.sphere_radius_m) + 0.0015
+        ax.set_xlim(-local_half, local_half)
+        ax.set_ylim(-local_half, local_half)
+        ax.set_zlim(-local_half, local_half)
+        ax.set_box_aspect((1.0, 1.0, 1.0))
+    else:
+        _set_equal_3d_axes(ax, np.vstack(all_points))
+    xlabel, ylabel, zlabel = _probe_axis_labels(options)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_zlabel(zlabel)
     ax.view_init(elev=options.elev, azim=options.azim)
     ax.grid(True, alpha=0.25)
     ax.set_title(probe.label or "Dexterous Probe")
@@ -751,7 +1075,17 @@ def _plot_mask_debug(ax, probe, options: DexterousPlotOptions) -> dict:
     ax.set_ylim(-1.05, 1.05)
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.25)
-    ax.set_title("Raster Mask / Contour" if geom.get("method") != "analytic_boundary" else "Analytic Boundary / Contour")
+    method = geom.get("method")
+    coverage = geom.get("coverage")
+    if method == "analytic_boundary":
+        title = "Analytic Boundary / Contour"
+    elif method == "feasible_hull":
+        title = "Feasible Hull / Contour"
+    else:
+        title = "Raster Mask / Contour"
+    if coverage is not None:
+        title += f"\ncoverage={coverage:.3f}"
+    ax.set_title(title)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
         ax.legend(handles, labels, loc="lower left", frameon=False)
@@ -811,6 +1145,8 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
     lines = [
         f"status: {debug_text.get('status')}",
         f"method: {debug_text.get('method')}",
+        f"boundary_only: {debug_text.get('is_boundary_only')}",
+        f"axis_degenerate: {debug_text.get('axis_degenerate_case')}",
         f"feasible_sym: {debug_text.get('feasible_count_sym')}",
         f"feasible_world: {debug_text.get('feasible_count_world')}",
         f"type1_sym: {debug_text.get('type1_boundary_count_sym')}",
@@ -820,6 +1156,27 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
         f"cap_fit_error_deg: {debug_text.get('cap_fit_error_deg')}",
         f"cap_radius_deg: {debug_text.get('cap_angular_radius_deg')}",
         f"use_cap: {debug_text.get('fit_used_as_cap')}",
+    ]
+    position_sym = debug_text.get("position_sym")
+    if position_sym is not None:
+        lines.append(
+            f"p_sym: [{position_sym[0]:.6f}, {position_sym[1]:.6f}, {position_sym[2]:.6f}]"
+        )
+    coeff = debug_text.get("analytic_line_coefficients")
+    if coeff is not None:
+        lines.append(
+            f"line(A,B,C): ({coeff.get('A'):.6g}, {coeff.get('B'):.6g}, {coeff.get('C'):.6g})"
+        )
+    degeneracy_reason = debug_text.get("degeneracy_reason")
+    if degeneracy_reason:
+        lines.extend(
+            [
+                "",
+                degeneracy_reason,
+            ]
+        )
+    lines.extend(
+        [
         "",
         f"grid_n: {options.region_grid_n}",
         f"sigma: {options.region_sigma}",
@@ -829,7 +1186,8 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
         f"contour_raw_pts: {len(geom['contour_raw'])}",
         f"contour_smooth_pts: {len(geom['contour_smooth'])}",
         f"triangles: {len(geom['triangles'])}",
-    ]
+        ]
+    )
     fallback = debug_text.get("fallback")
     if fallback is not None:
         lines.extend(
@@ -840,6 +1198,14 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
                 f"fallback.has_q_seed: {fallback.get('has_q_seed')}",
             ]
         )
+    boundary_families = debug_text.get("boundary_families") or []
+    if boundary_families:
+        lines.append("")
+        for fam in boundary_families:
+            lines.append(
+                f"{fam.get('family_id')}: {fam.get('primitive_type')} "
+                f"err={fam.get('fit_error'):.4g} n={fam.get('point_count')}"
+            )
     ax6.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=10)
     fig.tight_layout()
     fig.savefig(output_dir / f"{safe_label}_debug.png", dpi=220, bbox_inches="tight")

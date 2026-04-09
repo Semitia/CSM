@@ -21,6 +21,7 @@ from .workspace_boundary_scan import (
     plot_workspace_profiles,
 )
 from .dexterous_workspace import (
+    AnalyticBoundaryFamily,
     AnalyticDexterousWorkspace,
     AnalyticRegion,
     DexterousMode3State,
