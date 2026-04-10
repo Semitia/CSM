@@ -11,11 +11,11 @@ from csm import CSM, DexterousPlotOptions, build_dexterous_probe, render_dextero
 
 
 DEFAULT_PROBES_MM = [
-    [16.32, 2.14, 29.28],
+    # [16.32, 2.14, 29.28],
     # [0,0,35],
-    [2.63,0,35],
+    # [2.63,0,35],
     [26.75,0,22.82],
-    [20,0,14]
+    # [20,0,14]
 ]
 DEFAULT_DEBUG_OUTPUT_DIR = Path("data/dexterous_debug_patch")
 

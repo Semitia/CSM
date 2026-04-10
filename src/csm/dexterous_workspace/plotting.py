@@ -24,10 +24,16 @@ class DexterousPlotOptions:
     output_path: Path | None = None
     show_figure: bool = True
     figsize: tuple[float, float] = (6.2, 7.2)
-    sphere_alpha: float = 0.24
-    patch_alpha: float = 0.58
-    sphere_color: str = "#57E36D"
+    sphere_alpha: float = 0.1               # 球面不透明度
+    patch_alpha: float = 0.8
+    sphere_color: str = "#7A88B8"
     patch_color: str = "#C329B8"
+    sphere_wire_alpha: float = 0.0          # 经纬线不透明度
+    sphere_wire_linewidth: float = 0.45     # 经纬线线宽
+    sphere_wire_stride: int = 4
+    patch_radial_offset_ratio: float = 0.0
+    show_base_sphere: bool = True
+    patch_antialiased: bool = False
     robot_colors: tuple[str, str, str] = ("#1E40AF", "#22C55E", "#DC2626")
     display_frame: str = "local"
     show_robot: bool = False
@@ -48,6 +54,7 @@ class DexterousPlotOptions:
     family_min_points: int = 6
     family_hull_tolerance: float = 0.02
     analytic_fill_min_coverage: float = 0.9
+    show_patch_only_debug: bool = True
 
 
 def _orthonormal_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -117,17 +124,70 @@ def _local_directions_from_world(probe, directions_world: np.ndarray) -> np.ndar
     return (R_sw @ dirs.T).T
 
 
-def _plot_base_sphere(ax, center: np.ndarray, radius: float, color: str, alpha: float) -> None:
+def _plot_base_sphere(
+    ax,
+    center: np.ndarray,
+    radius: float,
+    color: str,
+    alpha: float,
+    *,
+    wire_alpha: float = 0.0,
+    wire_linewidth: float = 0.45,
+    wire_stride: int = 4,
+) -> None:
     u = np.linspace(0.0, 2.0 * math.pi, 60)
     v = np.linspace(0.0, math.pi, 40)
     uu, vv = np.meshgrid(u, v)
     x = center[0] + radius * np.cos(uu) * np.sin(vv)
     y = center[1] + radius * np.sin(uu) * np.sin(vv)
     z = center[2] + radius * np.cos(vv)
-    ax.plot_surface(x, y, z, color=color, alpha=alpha, linewidth=0.0, antialiased=True, shade=False)
+    if alpha > 0.0:
+        ax.plot_surface(
+            x,
+            y,
+            z,
+            color=color,
+            alpha=alpha,
+            linewidth=0.0,
+            edgecolor="none",
+            antialiased=True,
+            shade=False,
+        )
+    if wire_alpha > 0.0:
+        ax.plot_wireframe(
+            x,
+            y,
+            z,
+            rstride=max(1, int(wire_stride)),
+            cstride=max(1, int(wire_stride)),
+            color=color,
+            alpha=wire_alpha,
+            linewidth=wire_linewidth,
+        )
 
 
-def _plot_cap(ax, center: np.ndarray, direction: np.ndarray, angular_radius: float, radius: float, color: str, alpha: float) -> None:
+def _offset_surface_points(center: np.ndarray, points: np.ndarray, radial_offset: float) -> np.ndarray:
+    pts = np.asarray(points, dtype=float)
+    if pts.size == 0 or radial_offset == 0.0:
+        return pts
+    directions = pts - center[None, :]
+    norms = np.linalg.norm(directions, axis=1, keepdims=True)
+    safe_norms = np.maximum(norms, 1e-12)
+    return pts + radial_offset * directions / safe_norms
+
+
+def _plot_cap(
+    ax,
+    center: np.ndarray,
+    direction: np.ndarray,
+    angular_radius: float,
+    radius: float,
+    color: str,
+    alpha: float,
+    *,
+    radial_offset: float = 0.0,
+    antialiased: bool = False,
+) -> None:
     direction = np.asarray(direction, dtype=float)
     direction = direction / np.linalg.norm(direction)
     bx, by = _orthonormal_basis(direction)
@@ -144,10 +204,29 @@ def _plot_cap(ax, center: np.ndarray, direction: np.ndarray, angular_radius: flo
     x = center[0] + radius * dirs[..., 0]
     y = center[1] + radius * dirs[..., 1]
     z = center[2] + radius * dirs[..., 2]
-    ax.plot_surface(x, y, z, color=color, alpha=alpha, linewidth=0.0, antialiased=True, shade=False)
+    if radial_offset != 0.0:
+        pts = _offset_surface_points(center, np.column_stack([x.ravel(), y.ravel(), z.ravel()]), radial_offset)
+        x = pts[:, 0].reshape(x.shape)
+        y = pts[:, 1].reshape(y.shape)
+        z = pts[:, 2].reshape(z.shape)
+    surf = ax.plot_surface(x, y, z, color=color, alpha=alpha, linewidth=0.0, antialiased=antialiased, shade=False)
+    try:
+        surf.set_edgecolor((0, 0, 0, 0))
+    except Exception:
+        pass
 
 
-def _plot_patch(ax, center: np.ndarray, radius: float, directions_world: np.ndarray, color: str, alpha: float) -> None:
+def _plot_patch(
+    ax,
+    center: np.ndarray,
+    radius: float,
+    directions_world: np.ndarray,
+    color: str,
+    alpha: float,
+    *,
+    radial_offset: float = 0.0,
+    antialiased: bool = False,
+) -> None:
     if directions_world.shape[0] < 3:
         return
     centroid = np.mean(directions_world, axis=0)
@@ -156,6 +235,7 @@ def _plot_patch(ax, center: np.ndarray, radius: float, directions_world: np.ndar
     uv = np.column_stack([directions_world @ bx, directions_world @ by])
     tri = mtri.Triangulation(uv[:, 0], uv[:, 1])
     points = center[None, :] + radius * directions_world
+    points = _offset_surface_points(center, points, radial_offset)
     surf = ax.plot_trisurf(
         points[:, 0],
         points[:, 1],
@@ -165,11 +245,15 @@ def _plot_patch(ax, center: np.ndarray, radius: float, directions_world: np.ndar
         alpha=alpha,
         linewidth=0.0,
         edgecolor="none",
-        antialiased=True,
+        antialiased=antialiased,
         shade=False,
     )
     try:
         surf.set_edgecolor((0, 0, 0, 0))
+    except Exception:
+        pass
+    try:
+        surf.set_antialiased(antialiased)
     except Exception:
         pass
 
@@ -814,10 +898,22 @@ def _build_patch_geometry_from_symmetry_region(
     }
 
 
-def _plot_patch_mesh(ax, center: np.ndarray, radius: float, vertices_world: np.ndarray, triangles: np.ndarray, color: str, alpha: float) -> None:
+def _plot_patch_mesh(
+    ax,
+    center: np.ndarray,
+    radius: float,
+    vertices_world: np.ndarray,
+    triangles: np.ndarray,
+    color: str,
+    alpha: float,
+    *,
+    radial_offset: float = 0.0,
+    antialiased: bool = False,
+) -> None:
     if vertices_world.shape[0] < 3 or triangles.shape[0] == 0:
         return
     points = center[None, :] + radius * vertices_world
+    points = _offset_surface_points(center, points, radial_offset)
     surf = ax.plot_trisurf(
         points[:, 0],
         points[:, 1],
@@ -827,11 +923,15 @@ def _plot_patch_mesh(ax, center: np.ndarray, radius: float, vertices_world: np.n
         alpha=alpha,
         linewidth=0.0,
         edgecolor="none",
-        antialiased=True,
+        antialiased=antialiased,
         shade=False,
     )
     try:
         surf.set_edgecolor((0, 0, 0, 0))
+    except Exception:
+        pass
+    try:
+        surf.set_antialiased(antialiased)
     except Exception:
         pass
 
@@ -888,8 +988,7 @@ def _plot_robot(ax, csm: CSM, probe_state: DexterousMode3State | None, colors: t
     )
 
 
-def plot_dexterous_probe(ax, probe, *, csm: CSM | None = None, options: DexterousPlotOptions | None = None) -> None:
-    options = options or DexterousPlotOptions()
+def _draw_probe_surfaces(ax, probe, options: DexterousPlotOptions, *, draw_sphere: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     center = _probe_display_center(probe, options)
     patch_geom = _build_patch_geometry_from_symmetry_region(probe, options)
     patch_vertices = patch_geom["vertices_3d_world"]
@@ -906,7 +1005,19 @@ def plot_dexterous_probe(ax, probe, *, csm: CSM | None = None, options: Dexterou
         if cap_center is not None:
             cap_center = _local_directions_from_world(probe, cap_center.reshape(1, 3))[0]
     boundary_only = bool((probe.debug_data or {}).get("is_boundary_only"))
-    _plot_base_sphere(ax, center, float(probe.sphere_radius_m), options.sphere_color, options.sphere_alpha)
+    sphere_radius = float(probe.sphere_radius_m)
+    patch_radial_offset = sphere_radius * float(options.patch_radial_offset_ratio)
+    if draw_sphere and options.show_base_sphere:
+        _plot_base_sphere(
+            ax,
+            center,
+            sphere_radius,
+            options.sphere_color,
+            options.sphere_alpha,
+            wire_alpha=options.sphere_wire_alpha,
+            wire_linewidth=options.sphere_wire_linewidth,
+            wire_stride=options.sphere_wire_stride,
+        )
     use_cap = (
         cap_center is not None
         and probe.cap_angular_radius is not None
@@ -914,16 +1025,28 @@ def plot_dexterous_probe(ax, probe, *, csm: CSM | None = None, options: Dexterou
         and np.degrees(probe.cap_fit_error) <= options.use_cap_if_fit_below_deg
     )
     if use_cap and options.prefer_cap_over_patch:
-        _plot_cap(ax, center, cap_center, probe.cap_angular_radius, float(probe.sphere_radius_m), options.patch_color, options.patch_alpha)
+        _plot_cap(
+            ax,
+            center,
+            cap_center,
+            probe.cap_angular_radius,
+            sphere_radius,
+            options.patch_color,
+            options.patch_alpha,
+            radial_offset=patch_radial_offset,
+            antialiased=options.patch_antialiased,
+        )
     elif patch_vertices.shape[0] >= 3 and patch_geom["triangles"].shape[0] > 0:
         _plot_patch_mesh(
             ax,
             center,
-            float(probe.sphere_radius_m),
+            sphere_radius,
             patch_vertices,
             patch_geom["triangles"],
             options.patch_color,
             options.patch_alpha,
+            radial_offset=patch_radial_offset,
+            antialiased=options.patch_antialiased,
         )
     elif boundary_only and boundary_dirs.shape[0] >= 2:
         _plot_boundary_curve_world(
@@ -936,7 +1059,23 @@ def plot_dexterous_probe(ax, probe, *, csm: CSM | None = None, options: Dexterou
             linewidth=2.8,
         )
     elif feasible_dirs.shape[0] >= 3:
-        _plot_patch(ax, center, float(probe.sphere_radius_m), feasible_dirs, options.patch_color, options.patch_alpha)
+        _plot_patch(
+            ax,
+            center,
+            sphere_radius,
+            feasible_dirs,
+            options.patch_color,
+            options.patch_alpha,
+            radial_offset=patch_radial_offset,
+            antialiased=options.patch_antialiased,
+        )
+    return center, feasible_dirs, boundary_dirs
+
+
+def plot_dexterous_probe(ax, probe, *, csm: CSM | None = None, options: DexterousPlotOptions | None = None) -> None:
+    options = options or DexterousPlotOptions()
+    center, feasible_dirs, boundary_dirs = _draw_probe_surfaces(ax, probe, options, draw_sphere=True)
+    boundary_only = bool((probe.debug_data or {}).get("is_boundary_only"))
     if csm is not None and options.show_robot and options.display_frame == "world":
         _plot_robot(ax, csm, probe.display_state, options.robot_colors)
 
@@ -1053,6 +1192,31 @@ def _plot_final_debug(ax, probe, options: DexterousPlotOptions) -> None:
     ax.set_title("Final Render Primitive")
 
 
+def _plot_patch_only_debug(ax, probe, options: DexterousPlotOptions) -> None:
+    center, feasible_dirs, boundary_dirs = _draw_probe_surfaces(ax, probe, options, draw_sphere=False)
+    boundary_only = bool((probe.debug_data or {}).get("is_boundary_only"))
+    all_points = [center[None, :]]
+    if feasible_dirs.size:
+        all_points.append(center[None, :] + probe.sphere_radius_m * feasible_dirs)
+    if boundary_only and boundary_dirs.size:
+        all_points.append(center[None, :] + probe.sphere_radius_m * boundary_dirs)
+    if options.display_frame == "local":
+        local_half = float(probe.sphere_radius_m) + 0.0015
+        ax.set_xlim(-local_half, local_half)
+        ax.set_ylim(-local_half, local_half)
+        ax.set_zlim(-local_half, local_half)
+        ax.set_box_aspect((1.0, 1.0, 1.0))
+    else:
+        _set_equal_3d_axes(ax, np.vstack(all_points))
+    xlabel, ylabel, zlabel = _probe_axis_labels(options)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_zlabel(zlabel)
+    ax.view_init(elev=options.elev, azim=options.azim)
+    ax.grid(True, alpha=0.25)
+    ax.set_title("Patch Only")
+
+
 def _plot_mask_debug(ax, probe, options: DexterousPlotOptions) -> dict:
     geom = _build_patch_geometry_from_symmetry_region(probe, options)
     xs = geom["xs"]
@@ -1130,19 +1294,26 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_label = (probe.label or "probe").replace(" ", "_")
 
-    fig = plt.figure(figsize=(15.0, 11.0))
-    ax1 = fig.add_subplot(2, 3, 1)
+    fig = plt.figure(figsize=(18.0, 10.5))
+    ax1 = fig.add_subplot(2, 4, 1)
     _plot_symmetry_debug(ax1, probe)
-    ax2 = fig.add_subplot(2, 3, 2)
+    ax2 = fig.add_subplot(2, 4, 2)
     geom = _plot_mask_debug(ax2, probe, options)
-    ax3 = fig.add_subplot(2, 3, 3)
+    ax3 = fig.add_subplot(2, 4, 3)
     _plot_triangulation_debug(ax3, probe, geom)
-    ax4 = fig.add_subplot(2, 3, 4, projection="3d")
+    ax4 = fig.add_subplot(2, 4, 4, projection="3d")
     _plot_sphere_mapping_debug(ax4, probe, options)
-    ax5 = fig.add_subplot(2, 3, 5, projection="3d")
+    ax5 = fig.add_subplot(2, 4, 5, projection="3d")
     _plot_final_debug(ax5, probe, options)
-    ax6 = fig.add_subplot(2, 3, 6)
-    ax6.axis("off")
+    ax6 = fig.add_subplot(2, 4, 6, projection="3d")
+    if options.show_patch_only_debug:
+        _plot_patch_only_debug(ax6, probe, options)
+    else:
+        ax6.axis("off")
+    ax7 = fig.add_subplot(2, 4, 7)
+    ax7.axis("off")
+    ax8 = fig.add_subplot(2, 4, 8)
+    ax8.axis("off")
     debug_text = probe.debug_data or {}
     lines = [
         f"status: {debug_text.get('status')}",
@@ -1208,7 +1379,16 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
                 f"{fam.get('family_id')}: {fam.get('primitive_type')} "
                 f"err={fam.get('fit_error'):.4g} n={fam.get('point_count')}"
             )
-    ax6.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=10)
+    ax7.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=10)
+    render_lines = [
+        f"sphere_alpha: {options.sphere_alpha}",
+        f"patch_alpha: {options.patch_alpha}",
+        f"patch_radial_offset_ratio: {options.patch_radial_offset_ratio}",
+        f"show_base_sphere: {options.show_base_sphere}",
+        f"patch_antialiased: {options.patch_antialiased}",
+        f"show_patch_only_debug: {options.show_patch_only_debug}",
+    ]
+    ax8.text(0.0, 1.0, "\n".join(render_lines), va="top", ha="left", family="monospace", fontsize=10)
     fig.tight_layout()
     fig.savefig(output_dir / f"{safe_label}_debug.png", dpi=220, bbox_inches="tight")
     plt.close(fig)
