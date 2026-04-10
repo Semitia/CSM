@@ -47,7 +47,7 @@ class DexterousPlotOptions:
     line_simplify_tol: float = 0.01
     family_min_points: int = 6
     family_hull_tolerance: float = 0.02
-    analytic_fill_min_coverage: float = 0.995
+    analytic_fill_min_coverage: float = 0.9
 
 
 def _orthonormal_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -571,10 +571,28 @@ def _lift_patch_vertices_to_world(vertices_2d: np.ndarray, triangles: np.ndarray
     z = vertices_2d[:, 1]
     y_abs = np.sqrt(np.maximum(1.0 - x * x - z * z, 0.0))
     vertices_pos = np.column_stack([x, y_abs, z])
-    vertices_neg = np.column_stack([x, -y_abs, z])
-    vertices_sym_3d = np.vstack([vertices_pos, vertices_neg])
-    n_vertices = vertices_2d.shape[0]
-    triangles_dual = np.vstack([triangles, triangles[:, ::-1] + n_vertices])
+    seam_mask = y_abs <= 1e-7
+    neg_map = np.arange(vertices_2d.shape[0], dtype=int)
+    neg_only_idx = np.flatnonzero(~seam_mask)
+    if neg_only_idx.size:
+        vertices_neg = np.column_stack([x[neg_only_idx], -y_abs[neg_only_idx], z[neg_only_idx]])
+        neg_map[neg_only_idx] = np.arange(vertices_2d.shape[0], vertices_2d.shape[0] + neg_only_idx.size, dtype=int)
+        vertices_sym_3d = np.vstack([vertices_pos, vertices_neg])
+    else:
+        vertices_sym_3d = vertices_pos
+    triangles_neg = neg_map[triangles[:, ::-1]]
+    keep_neg = ~np.any(
+        np.stack(
+            [
+                triangles_neg[:, 0] == triangles_neg[:, 1],
+                triangles_neg[:, 1] == triangles_neg[:, 2],
+                triangles_neg[:, 0] == triangles_neg[:, 2],
+            ],
+            axis=1,
+        ),
+        axis=1,
+    )
+    triangles_dual = np.vstack([triangles, triangles_neg[keep_neg]])
     R_ws = np.array(
         [
             [math.cos(gamma), -math.sin(gamma), 0.0],
@@ -641,67 +659,51 @@ def _build_patch_geometry_from_boundary_families(
     poly_hull = _extract_circular_slice(hull_pts, arc_end_idx, arc_start_idx)
     if arc_hull.shape[0] < 2 or poly_hull.shape[0] < 3:
         return {}
-    families = {
-        fam.family_id: fam
-        for fam in (probe.boundary_families_sym or [])
-        if getattr(fam, "points_sym", np.zeros((0, 2))).shape[0] >= options.family_min_points and fam.primitive_type != "empty"
-    }
-    family_segments = {}
-    circle_touch_families: list[tuple[str, np.ndarray, np.ndarray]] = []
-    for family_id, fam in families.items():
-        seg = _extract_family_segment_near_hull(fam, hull_pts, options)
-        if seg.shape[0] < 2:
-            continue
-        family_segments[family_id] = seg
-        circle_pt, inner_pt = _split_family_endpoints_by_circle(seg)
-        if abs(np.linalg.norm(circle_pt) - 1.0) <= options.hull_arc_tol + options.family_hull_tolerance:
-            circle_touch_families.append((family_id, circle_pt, inner_pt))
+    keep_idx = _rdp_indices(poly_hull, options.line_simplify_tol)
+    keep_idx = np.unique(keep_idx)
+    if keep_idx[0] != 0:
+        keep_idx = np.concatenate([[0], keep_idx])
+    if keep_idx[-1] != poly_hull.shape[0] - 1:
+        keep_idx = np.concatenate([keep_idx, [poly_hull.shape[0] - 1]])
+    if keep_idx.size < 3:
+        return {}
 
-    if len(circle_touch_families) >= 2:
-        circle_touch_families.sort(key=lambda item: math.atan2(item[1][1], item[1][0]))
-        start_id, start_circle, _ = circle_touch_families[0]
-        end_id, end_circle, _ = circle_touch_families[-1]
-        start_family = families[start_id]
-        end_family = families[end_id]
-        start_seg = family_segments[start_id]
-        end_seg = family_segments[end_id]
-        start_seg = _orient_segment(start_seg, start_circle)
-        end_seg = _orient_segment(end_seg, end_circle)
-        joint = None
-        if start_family.primitive_type == "quadratic" and end_family.primitive_type == "line":
-            joint = _intersect_line_quadratic(end_family, start_family)
-        elif start_family.primitive_type == "line" and end_family.primitive_type == "quadratic":
-            joint = _intersect_line_quadratic(start_family, end_family)
-        if joint is None:
-            dmat = np.linalg.norm(start_seg[:, None, :] - end_seg[None, :, :], axis=2)
-            i, j = np.unravel_index(int(np.argmin(dmat)), dmat.shape)
-            joint = 0.5 * (start_seg[i] + end_seg[j])
-        arc_points = _sample_unit_arc(
-            end_circle / np.linalg.norm(end_circle),
-            start_circle / np.linalg.norm(start_circle),
-            n_samples=max(64, arc_hull.shape[0] * 12),
+    segment_normals: list[np.ndarray] = []
+    segment_offsets: list[float] = []
+    for i0, i1 in zip(keep_idx[:-1], keep_idx[1:]):
+        raw_seg = poly_hull[i0 : i1 + 1]
+        if raw_seg.shape[0] < 2:
+            continue
+        normal, offset = _fit_line_hesse(raw_seg)
+        segment_normals.append(normal)
+        segment_offsets.append(offset)
+    if len(segment_normals) < 2:
+        return {}
+
+    poly_vertices = []
+    start_intersection = _intersect_line_unit_circle(segment_normals[0], segment_offsets[0], poly_hull[0])
+    end_intersection = _intersect_line_unit_circle(segment_normals[-1], segment_offsets[-1], poly_hull[-1])
+    if start_intersection is None or end_intersection is None:
+        return {}
+    poly_vertices.append(start_intersection)
+    for idx in range(len(segment_normals) - 1):
+        corner = _intersect_lines(
+            segment_normals[idx],
+            segment_offsets[idx],
+            segment_normals[idx + 1],
+            segment_offsets[idx + 1],
         )
-        boundary = np.vstack([
-            arc_points,
-            start_seg[1:],
-            joint[None, :],
-            end_seg[::-1][1:],
-            arc_points[:1],
-        ])
-    else:
-        keep_idx = _rdp_indices(poly_hull, options.line_simplify_tol)
-        keep_idx = np.unique(keep_idx)
-        if keep_idx[0] != 0:
-            keep_idx = np.concatenate([[0], keep_idx])
-        if keep_idx[-1] != poly_hull.shape[0] - 1:
-            keep_idx = np.concatenate([keep_idx, [poly_hull.shape[0] - 1]])
-        if keep_idx.size < 3:
+        if corner is None:
             return {}
-        poly_points = poly_hull[keep_idx]
-        arc_start = poly_points[-1]
-        arc_end = poly_points[0]
-        arc_points = _sample_unit_arc(arc_start / np.linalg.norm(arc_start), arc_end / np.linalg.norm(arc_end), n_samples=max(64, arc_hull.shape[0] * 12))
-        boundary = np.vstack([arc_points, poly_points[1:-1], arc_points[:1]])
+        poly_vertices.append(corner)
+    poly_vertices.append(end_intersection)
+    poly_vertices = np.asarray(poly_vertices, dtype=float)
+
+    arc_start = end_intersection / max(float(np.linalg.norm(end_intersection)), 1e-12)
+    arc_end = start_intersection / max(float(np.linalg.norm(start_intersection)), 1e-12)
+    arc_points = _sample_unit_arc(arc_start, arc_end, n_samples=max(64, arc_hull.shape[0] * 12))
+    poly_points = _sample_polyline(poly_vertices, samples_per_seg=56)
+    boundary = np.vstack([arc_points, poly_points[1:-1], arc_points[:1]])
     coverage = _polygon_coverage_fraction(boundary, feasible)
     interior_stride = max(1, feasible.shape[0] // 2400)
     vertices_2d, triangles = _triangulate_planar_region(boundary, feasible[::interior_stride])
