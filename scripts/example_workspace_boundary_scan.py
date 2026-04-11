@@ -31,6 +31,7 @@ def main():
             output_path=Path("./data/workspace_boundary_scan_example.png"),
             debug_output_dir=Path("./data/workspace_boundary_scan_debug"),
             show_figure=True,
+            render_3d_mode="trisurf"
         ),
     )
 

@@ -6,6 +6,13 @@ from .model import CSM
 from .control_interface import ControlInterface, launch_control_interface
 from .visualizer import Visualizer
 from .line_generator import LineGenerator
+from .operation_box import (
+    OperationBox,
+    draw_operation_box,
+    fit_centered_operation_box_in_mode3,
+    fit_largest_centered_operation_box_in_mode3,
+    operation_box_vertices,
+)
 from .workspace_boundary_scan import (
     BoundaryPrimitive,
     BoundaryScanOptions,
