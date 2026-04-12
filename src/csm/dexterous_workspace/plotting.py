@@ -968,23 +968,15 @@ def _plot_robot(ax, csm: CSM, probe_state: DexterousMode3State | None, colors: t
     if probe_state is None:
         return
     display_csm = make_mode3_display_csm(csm, probe_state)
-    vis = display_csm.get_visualization_segments(arc_points=28, straight_points=6)
-    for seg in vis["segments"]:
-        pts = np.asarray(seg["points"], dtype=float)
-        color = colors[0]
-        if seg["label"] == "rigid":
-            color = colors[1]
-        elif seg["label"] == "seg2":
-            color = colors[2]
-        ax.plot(pts[:, 0], pts[:, 1], pts[:, 2], color=color, linewidth=3.0, alpha=0.95)
-    tool = vis["tool"]
-    ax.plot(
-        [tool["start"][0], tool["end"][0]],
-        [tool["start"][1], tool["end"][1]],
-        [tool["start"][2], tool["end"][2]],
-        color="#111827",
-        linewidth=3.0,
-        alpha=0.95,
+    # Reuse the main manipulator visualizer so dexterous figures match the
+    # standard "detailed" arm appearance used elsewhere in the project.
+    display_csm.plot_manipulator(
+        ax,
+        render_mode="detailed",
+        clear_ax=False,
+        draw_target=False,
+        configure_axes=False,
+        title=None,
     )
 
 

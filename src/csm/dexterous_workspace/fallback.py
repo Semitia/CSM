@@ -35,25 +35,51 @@ def fibonacci_sphere(samples: int) -> np.ndarray:
     return points
 
 
-def _seed_states(csm: CSM) -> list[DexterousMode3State]:
+def _seed_states(csm: CSM, position_xyz: np.ndarray | None = None) -> list[DexterousMode3State]:
     theta1_list = [0.15, 0.45, min(csm.theta1_limit * 0.85, 0.85)]
     theta2_list = [0.15, 0.55, min(csm.theta2_limit * 0.85, 1.1)]
     L1_list = [max(0.25 * csm.L_10, 1e-5), 0.6 * csm.L_10, 0.95 * csm.L_10]
+    phi_list = [0.0]
+    if position_xyz is not None:
+        target = np.asarray(position_xyz, dtype=float).reshape(3)
+        radial_xy = float(np.linalg.norm(target[:2]))
+        if radial_xy > 1e-9:
+            phi0 = float(math.atan2(target[1], target[0]))
+            # Try the target azimuth first, then nearby yaw guesses, so the
+            # position-only IK does not start from a seed facing the wrong
+            # quadrant for off-axis box points.
+            phi_list = [
+                phi0,
+                phi0 + 0.45 * math.pi,
+                phi0 - 0.45 * math.pi,
+                phi0 + 0.25 * math.pi,
+                phi0 - 0.25 * math.pi,
+                phi0 + math.pi,
+                0.0,
+            ]
+            deduped: list[float] = []
+            for phi in phi_list:
+                wrapped = float(math.atan2(math.sin(phi), math.cos(phi)))
+                if any(abs(wrapped - old) < 1e-9 for old in deduped):
+                    continue
+                deduped.append(wrapped)
+            phi_list = deduped
     seeds: list[DexterousMode3State] = []
-    for theta1 in theta1_list:
-        for theta2 in theta2_list:
-            for L1 in L1_list:
-                theta1_eff = min(theta1, max(1e-6, L1 / max(csm.ri_min or 1.0, 1e-8)))
-                seeds.append(
-                    DexterousMode3State(
-                        phi=0.0,
-                        theta1=float(theta1_eff),
-                        L1=float(L1),
-                        delta1=0.0,
-                        theta2=float(theta2),
-                        delta2=0.0,
+    for phi in phi_list:
+        for theta1 in theta1_list:
+            for theta2 in theta2_list:
+                for L1 in L1_list:
+                    theta1_eff = min(theta1, max(1e-6, L1 / max(csm.ri_min or 1.0, 1e-8)))
+                    seeds.append(
+                        DexterousMode3State(
+                            phi=float(phi),
+                            theta1=float(theta1_eff),
+                            L1=float(L1),
+                            delta1=0.0,
+                            theta2=float(theta2),
+                            delta2=0.0,
+                        )
                     )
-                )
     if int(csm.mode) == 3:
         seeds.insert(0, mode3_state_from_csm(csm))
     return seeds
@@ -99,7 +125,7 @@ def _solve_target(
 
 def bootstrap_position_reachable_state(csm: CSM, position_xyz: np.ndarray) -> DexterousMode3State | None:
     target_pos = np.asarray(position_xyz, dtype=float)
-    for seed in _seed_states(csm):
+    for seed in _seed_states(csm, target_pos):
         worker = make_mode3_display_csm(csm, seed)
         target_pose = np.concatenate([target_pos, worker.pose[3:]], dtype=float)
         ok, pos_err, _ = _solve_target(worker, target_pose, require_orientation=False)

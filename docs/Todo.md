@@ -135,4 +135,19 @@ antialiaseds=...
 先绘制 mode3 的 translation workspace，然后封装一个小工具，用于绘制类似图片中的“operation box”，即在上方主要 translation workspace 内部的一个主要工作空间。然后选一个顶点，随便选一个朝向逆解一组arm的配置。画上arm和这个朝向，最后画该处的 dexterous_workspace。
 但是我要补充一点，不应该将所有内容全部画在一个图里，box和translation workspace是一个大图，这个大图有main view 和 side view 两个小图，然后 box 和 dexterous workspace 是一个大图，这个里面的小图就是不同点位的 dexterous workspace ，暂时先只选两点位吧。那么这应该就是分别需要一个脚本。所以box封装在src里面好了。
 
+- [x] trans
+
 目前大致是这个意思，但是这个box应该是要在可行域内的，也就是上方那比较大的空间里，内切于可行域/不可行与的边界。
+参考dexterous，让trans绘制的时候也画detailed arm
+
+- [ ] dexterous
+为啥一个有arm一个没有？btw，我想要的是detailed的arm。然后单位球的直径最好要和box匹配，就先设置为其平均边长的0.8倍吧。最后这个球的视觉效果怎么跟我example_render_dexterous_workspace的不一样？
+
+图片是现在的效果，第二张是我想有的效果。一个是每张子图的显示范围/尺寸都是一样的，二是要想论文里那样瘦长的效果。三是论文坐标系像是封闭完整的立体框框住全部内容，但我的只有三个坐标轴像半开放式的，能否实现他类似的效果？
+一步步来，先第一个。
+
+比例必须严格1:1:1。
+
+朝向箭头改小，长度不超过单位圆半径。现在还有一个严重的问题，就是出图太慢了，我觉得不至于这么慢。可能是哪里有问题。
+
+- [ ] 统一绘制状态
