@@ -153,3 +153,8 @@ conda run -n csm python scripts/render_dexterous_workspace.py \
 
 - 测试见 [`tests/test_dexterous_workspace.py`](/home/winslow/RII/CSM/tests/test_dexterous_workspace.py)
 - 渲染脚本见 [`scripts/render_dexterous_workspace.py`](/home/winslow/RII/CSM/scripts/render_dexterous_workspace.py)
+
+
+python scripts/example_mode3_translation_figure.py --save-box-info data/mode3_box.json
+
+python scripts/example_mode3_dexterous_figure.py --load-box-info data/mode3_box.json
