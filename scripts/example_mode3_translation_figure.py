@@ -43,11 +43,11 @@ ARM_RANDOM_SAMPLES = 2500
 @dataclass(frozen=True)
 class FigureStyle:
     reachable_color: str = "#BFE4B5"
-    reachable_alpha: float = 0.25
-    unreachable_color: str = "#D3A37A"
-    unreachable_alpha: float = 0.2
+    reachable_alpha: float = 0.4
+    unreachable_color: str = "#4B4ED6"
+    unreachable_alpha: float = 0.6
     outer_contour_color: str = "#5D7C5C"
-    box_face_color: str = "#7EB9DF"
+    box_face_color: str = "#7EDCDF"
     box_edge_color: str = "#35566E"
     box_alpha_3d: float = 0.2
     box_alpha_side: float = 0.25
@@ -57,7 +57,6 @@ class FigureStyle:
     main_title: str = "Mode3 Translation Workspace"
     side_title: str = "Side View"
     figure_title: str = "Mode3 Translation Workspace with Operation Box"
-
 
 DEFAULT_STYLE = FigureStyle()
 BOX_INFO_SCHEMA_VERSION = 1
@@ -168,10 +167,12 @@ def _score_overlay_state(csm: CSM, box: OperationBox, state) -> float:
     center = np.asarray(box.center_xyz, dtype=float)
     half = np.maximum(np.asarray(box.half_size_xyz, dtype=float), 1e-9)
     normalized_offset = (pos - center) / half
-    radial_score = float(np.linalg.norm(normalized_offset[:2]))
+    radial_offset = float(np.linalg.norm(normalized_offset[:2]))
+    axial_offset = abs(float(normalized_offset[2]))
     tilt_score = float(np.linalg.norm(direction[:2]))
     upward_score = max(float(direction[2]), 0.0)
-    return 1.35 * tilt_score + 0.55 * radial_score + 0.10 * upward_score
+    centered_score = 1.0 - min(float(np.linalg.norm(normalized_offset)), 1.0)
+    return 1.25 * centered_score - 0.80 * radial_offset - 0.35 * axial_offset + 0.30 * tilt_score + 0.05 * upward_score
 
 
 def _sample_random_mode3_state(rng: np.random.Generator, params: DexterousParameters) -> DexterousMode3State:
@@ -389,13 +390,40 @@ def _draw_detailed_arm_side(ax, geometry) -> None:
                 zorder=5,
             )
 
-    tool_points = MM_PER_M * np.vstack(
-        [
-            np.asarray(geometry["tool"]["start"], dtype=float),
-            np.asarray(geometry["tool"]["end"], dtype=float),
-        ]
-    )
-    ax.plot(tool_points[:, 0], tool_points[:, 2], color=visualizer.palette["tool"], linewidth=1.4, alpha=0.92, zorder=7)
+    tool_length_mm = MM_PER_M * float(geometry["tool"]["length"])
+    if tool_length_mm > 0:
+        tool_rotation = np.asarray(geometry["tool"]["rotation"], dtype=float)
+        tool_start = MM_PER_M * np.asarray(geometry["tool"]["start"], dtype=float)
+        base_radius_mm = radius_mm * 1.05 * 0.82
+        angles = np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)
+        base_circle_local = np.vstack(
+            [
+                base_radius_mm * np.cos(angles),
+                base_radius_mm * np.sin(angles),
+                np.zeros_like(angles),
+            ]
+        )
+        base_circle_world = (tool_start[:, None] + tool_rotation @ base_circle_local).T
+        tip_world = tool_start + tool_rotation @ np.array([0.0, 0.0, tool_length_mm])
+        closed_circle = np.vstack([base_circle_world, base_circle_world[0]])
+        ax.plot(
+            closed_circle[:, 0],
+            closed_circle[:, 2],
+            color=visualizer.palette["tool"],
+            linewidth=1.0,
+            alpha=0.9,
+            zorder=7,
+        )
+        for idx in range(0, len(base_circle_world), 2):
+            edge = np.vstack([base_circle_world[idx], tip_world])
+            ax.plot(
+                edge[:, 0],
+                edge[:, 2],
+                color=visualizer.palette["tool"],
+                linewidth=1.0,
+                alpha=0.9,
+                zorder=7,
+            )
 
     if centerline:
         merged = np.vstack(centerline)
@@ -422,6 +450,14 @@ def _draw_side_box(ax, box_mm: OperationBox, style: FigureStyle) -> None:
         linewidth=style.box_linewidth_side,
     )
     ax.add_patch(rect)
+
+
+def _set_artists_zorder(artists, zorder: float) -> None:
+    for artist in artists:
+        try:
+            artist.set_zorder(zorder)
+        except Exception:
+            continue
 
 
 def build_figure(
@@ -460,7 +496,16 @@ def build_figure(
     )
 
     ax_main = fig.add_subplot(gs[0, 0], projection="3d")
+    if hasattr(ax_main, "computed_zorder"):
+        ax_main.computed_zorder = False
+
+    collection_count = len(ax_main.collections)
+    line_count = len(ax_main.lines)
     draw_revolved_profile(ax_main, profile, color=style.reachable_color, options=plot_options)
+    workspace_artists = list(ax_main.collections[collection_count:]) + list(ax_main.lines[line_count:])
+
+    collection_count = len(ax_main.collections)
+    line_count = len(ax_main.lines)
     draw_operation_box(
         ax_main,
         _box_to_display_units(box, 1000.0),
@@ -469,7 +514,17 @@ def build_figure(
         alpha=style.box_alpha_3d,
         linewidth=style.box_linewidth_3d,
     )
+    box_artists = list(ax_main.collections[collection_count:]) + list(ax_main.lines[line_count:])
+
+    collection_count = len(ax_main.collections)
+    line_count = len(ax_main.lines)
     _draw_detailed_arm_3d(ax_main, arm_geometry)
+    arm_artists = list(ax_main.collections[collection_count:]) + list(ax_main.lines[line_count:])
+
+    _set_artists_zorder(workspace_artists, 1.0)
+    _set_artists_zorder(box_artists, 2.0)
+    _set_artists_zorder(arm_artists, 20.0)
+
     configure_3d_axes(ax_main, [profile])
     ax_main.view_init(elev=18, azim=-38)
     ax_main.set_title(style.main_title, pad=10.0)
