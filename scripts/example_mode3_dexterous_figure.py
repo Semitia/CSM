@@ -112,7 +112,7 @@ def _csm_signature(csm: CSM) -> dict[str, float]:
         "L_tool_m": float(csm.L_tool),
         "theta1_limit_rad": float(csm.theta1_limit),
         "theta2_limit_rad": float(csm.theta2_limit),
-        "ri_min_m": None if csm.ri_min is None else float(csm.ri_min),
+        "ri_min_m": None if csm.r1_min is None else float(csm.r1_min),
     }
 
 
@@ -395,7 +395,7 @@ def _seed_display_states(csm: CSM, point_xyz: np.ndarray) -> list[DexterousMode3
         for theta1 in theta1_values:
             for theta2 in theta2_values:
                 for L1 in L1_values:
-                    theta1_eff = min(theta1, max(1e-6, L1 / max(float(csm.ri_min or 1.0), 1e-8)))
+                    theta1_eff = min(theta1, max(1e-6, L1 / max(float(csm.r1_min or csm.ri_min or 1.0), 1e-8)))
                     key = (
                         round(phi_wrapped, 6),
                         round(float(theta1_eff), 6),

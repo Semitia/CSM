@@ -69,7 +69,7 @@ def _seed_states(csm: CSM, position_xyz: np.ndarray | None = None) -> list[Dexte
         for theta1 in theta1_list:
             for theta2 in theta2_list:
                 for L1 in L1_list:
-                    theta1_eff = min(theta1, max(1e-6, L1 / max(csm.ri_min or 1.0, 1e-8)))
+                    theta1_eff = min(theta1, max(1e-6, L1 / max(csm.r1_min or csm.ri_min or 1.0, 1e-8)))
                     seeds.append(
                         DexterousMode3State(
                             phi=float(phi),

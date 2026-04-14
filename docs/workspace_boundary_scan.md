@@ -13,10 +13,13 @@
 
 ```python
 from csm.workspace_boundary_scan import (
+    BoundaryScanAnimationOptions,
     BoundaryScanOptions,
     BoundaryScanPlotOptions,
+    build_workspace_animation_data,
     build_workspace_profiles,
     plot_workspace_profiles,
+    render_workspace_scan_animation,
 )
 ```
 
@@ -64,10 +67,43 @@ plot_workspace_profiles(
 )
 ```
 
+## 过程动画
+
+过程动画是附加输出，不会改变原有静态 `build_workspace_profiles(...)` 和
+`plot_workspace_profiles(...)` 的使用方式。默认推荐导出 GIF，并把动画逻辑放在独立渲染入口：
+
+```python
+animation_data = build_workspace_animation_data(
+    csm,
+    modes=[0, 1, 2, 3, 4],
+    options=BoundaryScanOptions(length_samples=180, angle_samples=180),
+)
+
+render_workspace_scan_animation(
+    profiles,
+    animation_data,
+    BoundaryScanAnimationOptions(
+        enabled=True,
+        output_path=Path("./data/workspace_boundary_scan.gif"),
+        fps=12,
+        show_figure=False,
+    ),
+)
+```
+
+说明：
+
+- 动画默认渲染 2D side view 的边界生成过程，不做 3D revolve 动画。
+- `enabled=False` 时不会触发动画渲染。
+- 如果 `show_figure=False`，则必须提供 `output_path`。
+- GIF 导出依赖 `matplotlib` 的 Pillow writer；环境中需要安装 `Pillow`。
+
 ## 文件说明
 
 - [core.py](/home/winslow/RII/CSM/src/csm/workspace_boundary_scan/core.py)
   轮廓构建与 `mode0` 搜索。
+- [animation.py](/home/winslow/RII/CSM/src/csm/workspace_boundary_scan/animation.py)
+  动画阶段渲染与 GIF 导出。
 - [plotting.py](/home/winslow/RII/CSM/src/csm/workspace_boundary_scan/plotting.py)
   绘图、坐标轴配置、debug 图保存。
 - [__init__.py](/home/winslow/RII/CSM/src/csm/workspace_boundary_scan/__init__.py)

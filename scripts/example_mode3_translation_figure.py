@@ -95,7 +95,7 @@ def _csm_signature(csm: CSM) -> dict[str, float]:
         "L_tool_m": float(csm.L_tool),
         "theta1_limit_rad": float(csm.theta1_limit),
         "theta2_limit_rad": float(csm.theta2_limit),
-        "ri_min_m": None if csm.ri_min is None else float(csm.ri_min),
+        "ri_min_m": None if csm.r1_min is None else float(csm.r1_min),
     }
 
 

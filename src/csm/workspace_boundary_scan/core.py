@@ -29,6 +29,36 @@ class BoundaryPrimitive:
 
 
 @dataclass
+class WorkspaceAnimationCurve:
+    points_rz: np.ndarray
+    label: str | None = None
+    color: str | None = None
+    linestyle: str = "-"
+    linewidth: float = 2.0
+    alpha: float = 1.0
+    mirror: bool = True
+    progressive: bool = True
+    marker: str | None = None
+    markersize: float = 6.0
+
+
+@dataclass
+class WorkspaceAnimationStage:
+    title: str
+    curves: list[WorkspaceAnimationCurve] = field(default_factory=list)
+    annotation: str | None = None
+    frames: int = 18
+    state_sequence: list[dict[str, float]] = field(default_factory=list)
+
+
+@dataclass
+class WorkspaceAnimationData:
+    mode: int
+    stages: list[WorkspaceAnimationStage] = field(default_factory=list)
+    csm_spec: dict[str, float] | None = None
+
+
+@dataclass
 class BoundaryScanOptions:
     length_samples: int = 240
     angle_samples: int = 240
@@ -1034,3 +1064,552 @@ def build_workspace_profile(csm, mode, options: BoundaryScanOptions | None = Non
 def build_workspace_profiles(csm, modes, options: BoundaryScanOptions | None = None):
     options = options or BoundaryScanOptions()
     return [build_workspace_profile(csm, mode, options) for mode in modes]
+
+
+def _state_dict(*, mode, L1, L2, Lr, Ls, theta_1, theta_2, phi=0.0, delta_1=0.0, delta_2=0.0):
+    return {
+        "mode": int(mode),
+        "phi": float(phi),
+        "L1": float(L1),
+        "L2": float(L2),
+        "Lr": float(Lr),
+        "Ls": float(Ls),
+        "theta_1": float(theta_1),
+        "theta_2": float(theta_2),
+        "delta_1": float(delta_1),
+        "delta_2": float(delta_2),
+    }
+
+
+def _copy_state_sequence(states):
+    return [dict(state) for state in states]
+
+
+def _extract_csm_spec(csm):
+    return {
+        "L_10": float(csm.L_10),
+        "L_20": float(csm.L_20),
+        "L_r0": float(csm.L_r0),
+        "L_s0": float(csm.L_s0),
+        "L_tool": float(csm.L_tool),
+        "theta1_max": float(csm.theta1_max),
+        "theta2_max": float(csm.theta2_max),
+        "delta_t": float(csm.delta_t),
+        "r1_min": float(csm.r1_min),
+        "r2_min": float(csm.r2_min),
+    }
+
+
+def _copy_animation_curve(points_rz, **kwargs):
+    return WorkspaceAnimationCurve(points_rz=np.asarray(points_rz, dtype=float).copy(), **kwargs)
+
+
+def _animation_stage(title, curves, annotation=None, frames=18, state_sequence=None):
+    return WorkspaceAnimationStage(
+        title=title,
+        curves=list(curves),
+        annotation=annotation,
+        frames=frames,
+        state_sequence=[] if state_sequence is None else _copy_state_sequence(state_sequence),
+    )
+
+
+def _mode1_inner_states(csm, length_samples):
+    return [
+        _state_dict(
+            mode=1,
+            L1=0.0,
+            L2=L2,
+            Lr=0.0,
+            Ls=0.0,
+            theta_1=0.0,
+            theta_2=min(csm.kappa_20 * L2, csm.theta2_limit),
+        )
+        for L2 in np.linspace(0.0, csm.L_20, length_samples)
+    ]
+
+
+def _mode2_theta_states(csm, Lr, theta_start, theta_end, angle_samples):
+    return [
+        _state_dict(
+            mode=2,
+            L1=0.0,
+            L2=csm.L_20,
+            Lr=Lr,
+            Ls=0.0,
+            theta_1=0.0,
+            theta_2=theta_2,
+        )
+        for theta_2 in np.linspace(theta_start, theta_end, angle_samples)
+    ]
+
+
+def _mode2_lr_states(csm, theta_2, lr_start, lr_end, length_samples):
+    return [
+        _state_dict(
+            mode=2,
+            L1=0.0,
+            L2=csm.L_20,
+            Lr=Lr,
+            Ls=0.0,
+            theta_1=0.0,
+            theta_2=theta_2,
+        )
+        for Lr in np.linspace(lr_start, lr_end, length_samples)
+    ]
+
+
+def _mode3_theta2_states(csm, L1, theta_1, theta_start, theta_end, angle_samples):
+    return [
+        _state_dict(
+            mode=3,
+            L1=L1,
+            L2=csm.L_20,
+            Lr=csm.L_r0,
+            Ls=0.0,
+            theta_1=theta_1,
+            theta_2=theta_2,
+        )
+        for theta_2 in np.linspace(theta_start, theta_end, angle_samples)
+    ]
+
+
+def _mode3_l1_states(csm, theta_2, l1_start, l1_end, length_samples):
+    return [
+        _state_dict(
+            mode=3,
+            L1=L1,
+            L2=csm.L_20,
+            Lr=csm.L_r0,
+            Ls=0.0,
+            theta_1=min(csm.kappa_10 * L1, csm.theta1_limit),
+            theta_2=theta_2,
+        )
+        for L1 in np.linspace(l1_start, l1_end, length_samples)
+    ]
+
+
+def _mode3_theta1_states(csm, L1, theta1_start, theta1_end, theta_2, angle_samples):
+    return [
+        _state_dict(
+            mode=3,
+            L1=L1,
+            L2=csm.L_20,
+            Lr=csm.L_r0,
+            Ls=0.0,
+            theta_1=theta_1,
+            theta_2=theta_2,
+        )
+        for theta_1 in np.linspace(theta1_start, theta1_end, angle_samples)
+    ]
+
+
+def _mode4_theta1_states(csm, Ls, theta1_start, theta1_end, theta_2, angle_samples):
+    return [
+        _state_dict(
+            mode=4,
+            L1=csm.L_10,
+            L2=csm.L_20,
+            Lr=csm.L_r0,
+            Ls=Ls,
+            theta_1=theta_1,
+            theta_2=theta_2,
+        )
+        for theta_1 in np.linspace(theta1_start, theta1_end, angle_samples)
+    ]
+
+
+def _mode4_theta2_states(csm, Ls, theta_1, theta_start, theta_end, angle_samples):
+    return [
+        _state_dict(
+            mode=4,
+            L1=csm.L_10,
+            L2=csm.L_20,
+            Lr=csm.L_r0,
+            Ls=Ls,
+            theta_1=theta_1,
+            theta_2=theta_2,
+        )
+        for theta_2 in np.linspace(theta_start, theta_end, angle_samples)
+    ]
+
+
+def _mode4_ls_states(csm, theta_1, theta_2, ls_start, ls_end, length_samples):
+    return [
+        _state_dict(
+            mode=4,
+            L1=csm.L_10,
+            L2=csm.L_20,
+            Lr=csm.L_r0,
+            Ls=Ls,
+            theta_1=theta_1,
+            theta_2=theta_2,
+        )
+        for Ls in np.linspace(ls_start, ls_end, length_samples)
+    ]
+
+
+def _build_mode1_animation_data(profile: WorkspaceProfile, csm=None):
+    inner_curve = profile.inner_segments[0]
+    outer_curve = profile.outer_segments[0]
+    inner_states = [] if csm is None else _mode1_inner_states(csm, max(len(inner_curve), 2))
+    outer_states = [] if csm is None else _mode2_theta_states(csm, 0.0, csm.theta2_limit, 0.0, max(len(outer_curve), 2))
+    stages = [
+        _animation_stage(
+            "Mode 1: Inner Boundary",
+            [_copy_animation_curve(inner_curve, label="Inner contour", color="#D79A6B")],
+            annotation="Sweep the insertion length to form the inner forbidden boundary.",
+            state_sequence=inner_states,
+        ),
+        _animation_stage(
+            "Mode 1: Outer Boundary",
+            [
+                _copy_animation_curve(inner_curve, label="Inner contour", color="#D79A6B", progressive=False, alpha=0.55),
+                _copy_animation_curve(outer_curve, label="Outer contour", color="#2D5F73"),
+            ],
+            annotation="Sweep the outer family to close the reachable shell.",
+            state_sequence=outer_states,
+        ),
+        _animation_stage(
+            "Mode 1: Final Profile",
+            [
+                _copy_animation_curve(inner_curve, label="Inner contour", color="#D79A6B", progressive=False),
+                _copy_animation_curve(outer_curve, label="Outer contour", color="#2D5F73", progressive=False),
+            ],
+            annotation="Final side-view boundary for mode 1.",
+            frames=12,
+            state_sequence=[] if not outer_states else [outer_states[-1]],
+        ),
+    ]
+    return WorkspaceAnimationData(mode=profile.mode, stages=stages, csm_spec=None if csm is None else _extract_csm_spec(csm))
+
+
+def _build_mode2_animation_data(profile: WorkspaceProfile, csm=None):
+    debug = profile.debug_data or {}
+    primitives = debug.get("primitives", {})
+    inner_segments = debug.get("inner_segments", profile.inner_segments)
+    outer_segments = debug.get("outer_segments", profile.outer_segments)
+    tau0_states = [] if csm is None else _mode2_theta_states(csm, 0.0, 0.0, csm.theta2_limit, max(len(primitives.get("tau0", [])), 2))
+    tau1_states = [] if csm is None else _mode2_theta_states(csm, csm.L_r0, 0.0, csm.theta2_limit, max(len(primitives.get("tau1", [])), 2))
+    tau2_states = [] if csm is None else _mode2_lr_states(csm, csm.theta2_limit, csm.L_r0, 0.0, max(len(primitives.get("tau2", [])), 2))
+    stages = [
+        _animation_stage(
+            "Mode 2: tau0",
+            [_copy_animation_curve(primitives["tau0"], label="tau0", color="#C96868")] if "tau0" in primitives else [],
+            annotation="Trace the base family tau0.",
+            state_sequence=tau0_states,
+        ),
+        _animation_stage(
+            "Mode 2: tau1",
+            [
+                _copy_animation_curve(primitives["tau0"], label="tau0", color="#C96868", progressive=False, alpha=0.65),
+                _copy_animation_curve(primitives["tau1"], label="tau1", color="#7C5CFC") if "tau1" in primitives else None,
+            ],
+            annotation="Trace tau1 while keeping tau0 as reference.",
+            state_sequence=tau1_states,
+        ),
+        _animation_stage(
+            "Mode 2: tau2",
+            [
+                _copy_animation_curve(primitives["tau0"], label="tau0", color="#C96868", progressive=False, alpha=0.65),
+                _copy_animation_curve(primitives["tau1"], label="tau1", color="#7C5CFC", progressive=False, alpha=0.65) if "tau1" in primitives else None,
+                _copy_animation_curve(primitives["tau2"], label="tau2", color="#2E8B57") if "tau2" in primitives else None,
+            ],
+            annotation="Build the candidate families used to trim the inner boundary.",
+            state_sequence=tau2_states,
+        ),
+    ]
+    for stage in stages:
+        if stage.curves:
+            stage.curves = [curve for curve in stage.curves if curve is not None]
+
+    hit_curves = []
+    for hit_key, color, label in (
+        ("hit_tau1", "#7C5CFC", "hit tau1"),
+        ("hit_tau2", "#2E8B57", "hit tau2"),
+        ("chosen_hit", "#111111", "chosen hit"),
+    ):
+        hit = debug.get(hit_key)
+        if hit is not None:
+            hit_curves.append(
+                _copy_animation_curve(
+                    np.asarray(hit["point"], dtype=float)[np.newaxis, :],
+                    label=label,
+                    color=color,
+                    progressive=False,
+                    marker="o",
+                    linewidth=0.0,
+                    mirror=True,
+                )
+            )
+    stages.append(
+        _animation_stage(
+            "Mode 2: Intersection Selection",
+            [curve for curve in stages[-1].curves] + hit_curves,
+            annotation="Pick the earliest intersection to define the trimmed inner boundary.",
+            state_sequence=[] if not tau2_states else [tau2_states[-1]],
+        )
+    )
+    stages.append(
+        _animation_stage(
+            "Mode 2: Final Boundary",
+            [
+                *[
+                    _copy_animation_curve(segment, label=f"inner_{idx}", color="#D79A6B", progressive=False)
+                    for idx, segment in enumerate(inner_segments)
+                ],
+                *[
+                    _copy_animation_curve(segment, label=f"outer_{idx}", color="#2D5F73", progressive=False)
+                    for idx, segment in enumerate(outer_segments)
+                ],
+            ],
+            annotation="Compose the final inner and outer contours.",
+            frames=22,
+            state_sequence=[] if not tau2_states else [tau2_states[-1]],
+        )
+    )
+    return WorkspaceAnimationData(mode=profile.mode, stages=stages, csm_spec=None if csm is None else _extract_csm_spec(csm))
+
+
+def _build_mode3_animation_data(profile: WorkspaceProfile, csm=None):
+    debug = profile.debug_data or {}
+    primitives = debug.get("primitives", {})
+    primitive_colors = {
+        "tau0": "#C96868",
+        "tau1": "#2E8B57",
+        "tau2": "#7C5CFC",
+        "tau3": "#1F5D78",
+    }
+    stages = []
+    visible = []
+    state_builders = {}
+    if csm is not None:
+        state_builders = {
+            "tau0": _mode3_theta2_states(csm, 0.0, 0.0, 0.0, csm.theta2_limit, max(len(primitives.get("tau0", [])), 2)),
+            "tau1": _mode3_l1_states(csm, csm.theta2_limit, 0.0, csm.L_10, max(len(primitives.get("tau1", [])), 2)),
+            "tau2": _mode3_theta2_states(csm, csm.L_10, csm.theta1_limit, csm.theta2_limit, 0.0, max(len(primitives.get("tau2", [])), 2)),
+            "tau3": _mode3_theta1_states(csm, csm.L_10, csm.theta1_limit, 0.0, 0.0, max(len(primitives.get("tau3", [])), 2)),
+        }
+    for name in ("tau0", "tau1", "tau2", "tau3"):
+        curve = primitives.get(name)
+        if curve is None:
+            continue
+        visible = [*visible, _copy_animation_curve(curve, label=name, color=primitive_colors[name])]
+        stages.append(
+            _animation_stage(
+                f"Mode 3: {name}",
+                [
+                    _copy_animation_curve(item.points_rz, label=item.label, color=item.color, progressive=False if idx < len(visible) - 1 else True)
+                    for idx, item in enumerate(visible)
+                ],
+                annotation="Accumulate the primitive families that define the mode 3 boundary.",
+                state_sequence=state_builders.get(name, []),
+            )
+        )
+    stages.append(
+        _animation_stage(
+            "Mode 3: Final Boundary",
+            [
+                *[
+                    _copy_animation_curve(segment, label=f"inner_{idx}", color="#D79A6B", progressive=False)
+                    for idx, segment in enumerate(profile.inner_segments)
+                ],
+                *[
+                    _copy_animation_curve(segment, label=f"outer_{idx}", color="#2D5F73", progressive=False)
+                    for idx, segment in enumerate(profile.outer_segments)
+                ],
+            ],
+            annotation="Combine the primitive families into the final profile.",
+            frames=22,
+            state_sequence=[] if "tau3" not in state_builders else [state_builders["tau3"][-1]],
+        )
+    )
+    return WorkspaceAnimationData(mode=profile.mode, stages=stages, csm_spec=None if csm is None else _extract_csm_spec(csm))
+
+
+def _build_mode4_animation_data(profile: WorkspaceProfile, csm=None):
+    debug = profile.debug_data or {}
+    primitives = debug.get("primitives", {})
+    family_path = debug.get("family_path")
+    outer_theta1_states = [] if csm is None else _mode4_theta1_states(csm, csm.L_s0, 0.0, debug.get("theta1_break", csm.theta1_limit), 0.0, max(len(primitives.get("outer_theta1", [])), 2))
+    outer_theta2_pre_states = [] if csm is None else _mode4_theta2_states(csm, csm.L_s0, debug.get("theta1_break", csm.theta1_limit), 0.0, csm.theta2_limit, max(len(primitives.get("outer_theta2_pre", [])), 2))
+    outer_ls_states = [] if csm is None else _mode4_ls_states(csm, debug.get("theta1_break", csm.theta1_limit), debug.get("theta2_break", 0.0), csm.L_s0, 0.0, max(len(primitives.get("outer_ls", [])), 2))
+    outer_theta2_states = [] if csm is None else _mode4_theta2_states(csm, 0.0, debug.get("theta1_break", csm.theta1_limit), debug.get("theta2_break", 0.0), csm.theta2_limit, max(len(primitives.get("outer_theta2", [])), 2))
+    inner_family_states = [] if csm is None else _mode4_theta2_states(csm, 0.0, debug.get("theta1_break", csm.theta1_limit), 0.0, csm.theta2_limit, max(len(primitives.get("inner_family_theta2", [])), 2))
+    stages = [
+        _animation_stage(
+            "Mode 4: outer_theta1",
+            [_copy_animation_curve(primitives["outer_theta1"], label="outer_theta1", color="#2D5F73")] if "outer_theta1" in primitives else [],
+            annotation="Build the first outer family branch for mode 4.",
+            frames=22,
+            state_sequence=outer_theta1_states,
+        ),
+        _animation_stage(
+            "Mode 4: outer_theta2_pre",
+            [
+                _copy_animation_curve(primitives["outer_theta1"], label="outer_theta1", color="#2D5F73", progressive=False, alpha=0.65) if "outer_theta1" in primitives else None,
+                _copy_animation_curve(primitives["outer_theta2_pre"], label="outer_theta2_pre", color="#2D5F73") if "outer_theta2_pre" in primitives else None,
+            ],
+            annotation="Continue the outer family with the pre-break theta2 sweep.",
+            frames=22,
+            state_sequence=outer_theta2_pre_states,
+        ),
+        _animation_stage(
+            "Mode 4: outer_ls",
+            [
+                _copy_animation_curve(primitives["outer_theta1"], label="outer_theta1", color="#2D5F73", progressive=False, alpha=0.55) if "outer_theta1" in primitives else None,
+                _copy_animation_curve(primitives["outer_theta2_pre"], label="outer_theta2_pre", color="#2D5F73", progressive=False, alpha=0.55) if "outer_theta2_pre" in primitives else None,
+                _copy_animation_curve(primitives["outer_ls"], label="outer_ls", color="#2D5F73") if "outer_ls" in primitives else None,
+            ],
+            annotation="Sweep the base length branch of the outer family.",
+            frames=22,
+            state_sequence=outer_ls_states,
+        ),
+        _animation_stage(
+            "Mode 4: outer_theta2",
+            [
+                _copy_animation_curve(primitives["outer_theta1"], label="outer_theta1", color="#2D5F73", progressive=False, alpha=0.45) if "outer_theta1" in primitives else None,
+                _copy_animation_curve(primitives["outer_theta2_pre"], label="outer_theta2_pre", color="#2D5F73", progressive=False, alpha=0.45) if "outer_theta2_pre" in primitives else None,
+                _copy_animation_curve(primitives["outer_ls"], label="outer_ls", color="#2D5F73", progressive=False, alpha=0.45) if "outer_ls" in primitives else None,
+                _copy_animation_curve(primitives["outer_theta2"], label="outer_theta2", color="#2D5F73") if "outer_theta2" in primitives else None,
+            ],
+            annotation="Finish the outer family with the final theta2 sweep.",
+            frames=22,
+            state_sequence=outer_theta2_states,
+        ),
+        _animation_stage(
+            "Mode 4: Inner Family",
+            [
+                *[
+                    _copy_animation_curve(primitives[name], label=name, color="#D79A6B")
+                    for name in ("mode3_inner_theta2", "mode3_inner_l1", "inner_family_theta2", "inner_ls_cover")
+                    if name in primitives
+                ],
+                _copy_animation_curve(family_path, label="family_path", color="#111111", linestyle="--")
+                if family_path is not None else None,
+            ],
+            annotation="Construct the candidate inner family used for cover trimming.",
+            frames=22,
+            state_sequence=inner_family_states,
+        ),
+    ]
+    for stage in stages:
+        if stage.curves:
+            stage.curves = [curve for curve in stage.curves if curve is not None]
+
+    hit = debug.get("cover_hit")
+    if hit is not None:
+        stages.append(
+            _animation_stage(
+                "Mode 4: Cover Hit",
+                [
+                    *[
+                        _copy_animation_curve(curve.points_rz, label=curve.label, color=curve.color, progressive=False, linestyle=curve.linestyle)
+                        for curve in stages[-1].curves
+                    ],
+                    _copy_animation_curve(
+                        np.asarray(hit["point"], dtype=float)[np.newaxis, :],
+                        label="cover_hit",
+                        color="#111111",
+                        progressive=False,
+                        marker="o",
+                        linewidth=0.0,
+                    ),
+                ],
+                annotation="Locate the cover-family intersection used to trim the inner contour.",
+                state_sequence=[] if not inner_family_states else [inner_family_states[-1]],
+            )
+        )
+
+    stages.append(
+        _animation_stage(
+            "Mode 4: Final Boundary",
+            [
+                *[
+                    _copy_animation_curve(segment, label=f"inner_{idx}", color="#D79A6B", progressive=False)
+                    for idx, segment in enumerate(profile.inner_segments)
+                ],
+                *[
+                    _copy_animation_curve(segment, label=f"outer_{idx}", color="#2D5F73", progressive=False)
+                    for idx, segment in enumerate(profile.outer_segments)
+                ],
+            ],
+            annotation="Compose the trimmed inner boundary and the final outer shell.",
+            frames=24,
+            state_sequence=[] if not outer_theta2_states else [outer_theta2_states[-1]],
+        )
+    )
+    return WorkspaceAnimationData(mode=profile.mode, stages=stages, csm_spec=None if csm is None else _extract_csm_spec(csm))
+
+
+def _build_mode0_animation_data(profile: WorkspaceProfile, csm=None):
+    debug = profile.debug_data or {}
+    network_curves = [
+        _copy_animation_curve(curve, label=name, color="#7A7A7A" if role == "outer" else "#C28C62", linestyle="--", linewidth=1.4, alpha=0.7)
+        for name, role, curve in debug.get("all_curves", [])
+    ]
+    trace_segments = [
+        _copy_animation_curve(segment, label=f"trace_{idx}", color="#111111", linewidth=2.8)
+        for idx, segment in enumerate(debug.get("trace_segments", []))
+    ]
+    stages = [
+        _animation_stage(
+            "Mode 0: Source Network",
+            network_curves,
+            annotation="Assemble all source inner and outer contours into the tracing graph.",
+            frames=24,
+        ),
+    ]
+    if trace_segments:
+        stages.append(
+            _animation_stage(
+                "Mode 0: Right-Turn Trace",
+                [
+                    *[
+                        _copy_animation_curve(curve.points_rz, label=curve.label, color=curve.color, linestyle=curve.linestyle, linewidth=curve.linewidth, alpha=0.35, progressive=False)
+                        for curve in network_curves
+                    ],
+                    *trace_segments,
+                ],
+                annotation="Follow the right-turn rule from the mode 1 inner contour to the outer shell.",
+                frames=24,
+            )
+        )
+    stages.append(
+        _animation_stage(
+            "Mode 0: Final Boundary",
+            [
+                *[
+                    _copy_animation_curve(curve.points_rz, label=curve.label, color=curve.color, linestyle=curve.linestyle, linewidth=curve.linewidth, alpha=0.25, progressive=False)
+                    for curve in network_curves
+                ],
+                _copy_animation_curve(profile.inner_segments[0], label="final_inner", color="#111111", linewidth=3.0, progressive=False),
+                *[
+                    _copy_animation_curve(segment, label=f"outer_{idx}", color="#2D5F73", progressive=False)
+                    for idx, segment in enumerate(profile.outer_segments)
+                ],
+            ],
+            annotation="Promote the traced path into the final mode 0 inner boundary.",
+            frames=26,
+        )
+    )
+    return WorkspaceAnimationData(mode=profile.mode, stages=stages, csm_spec=None if csm is None else _extract_csm_spec(csm))
+
+
+def build_workspace_profile_animation_data(profile: WorkspaceProfile, csm=None):
+    if profile.mode == 0:
+        return _build_mode0_animation_data(profile, csm=csm)
+    if profile.mode == 1:
+        return _build_mode1_animation_data(profile, csm=csm)
+    if profile.mode == 2:
+        return _build_mode2_animation_data(profile, csm=csm)
+    if profile.mode == 3:
+        return _build_mode3_animation_data(profile, csm=csm)
+    if profile.mode == 4:
+        return _build_mode4_animation_data(profile, csm=csm)
+    raise NotImplementedError(f"Mode {profile.mode} is not implemented yet in boundary-scan animation.")
+
+
+def build_workspace_animation_data(csm, modes, options: BoundaryScanOptions | None = None):
+    profiles = build_workspace_profiles(csm, modes, options)
+    return [build_workspace_profile_animation_data(profile, csm=csm) for profile in profiles]

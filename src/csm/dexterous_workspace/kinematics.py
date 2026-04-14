@@ -130,11 +130,13 @@ class DexterousParameters:
             raise ValueError(f"Only 3mm config is supported for now, got {config!r}.")
         if csm.L_s0 > 1e-12:
             raise ValueError("Dexterous mode only supports the 3mm configuration without base insertion.")
-        ri_min = csm.ri_min
-        if ri_min is None:
-            ri_min = DEFAULT_R1_MINUS_BY_CONFIG_M.get(config)
-        if ri_min is None:
-            raise ValueError("ri_min is required to build dexterous-workspace parameters.")
+        r1_min = csm.r1_min
+        if r1_min is None:
+            r1_min = csm.ri_min
+        if r1_min is None:
+            r1_min = DEFAULT_R1_MINUS_BY_CONFIG_M.get(config)
+        if r1_min is None:
+            raise ValueError("r1_min (or ri_min) is required to build dexterous-workspace parameters.")
         return cls(
             L10_m=float(csm.L_10),
             L20_m=float(csm.L_20),
@@ -142,7 +144,7 @@ class DexterousParameters:
             Lg_m=float(csm.L_tool),
             theta1_plus=float(csm.theta1_limit),
             theta2_plus=float(csm.theta2_limit),
-            r1_minus_m=float(ri_min),
+            r1_minus_m=float(r1_min),
         )
 
 
@@ -157,6 +159,8 @@ def clone_csm(csm: CSM) -> CSM:
         theta2_max=float(csm.theta2_max),
         delta_t=float(csm.delta_t),
         ri_min=None if csm.ri_min is None else float(csm.ri_min),
+        r1_min=None if csm.r1_min is None else float(csm.r1_min),
+        r2_min=None if csm.r2_min is None else float(csm.r2_min),
     )
     cloned.set_state(
         mode=int(csm.mode),

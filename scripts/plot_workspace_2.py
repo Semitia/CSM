@@ -18,10 +18,10 @@ from tqdm.auto import tqdm
 from csm.model import CSM
 
 # ===== Data source =====
-CONFIG_NAME = "csm_cfg_0_tool.yaml"
+CONFIG_NAME = "csm_cfg_3mm.yaml"
 CONFIG_PATH = Path("./config") / CONFIG_NAME
-# PLOT_MODES = [1, 2, 3, 4]
-PLOT_MODES = [4]
+# PLOT_MODES = [3]
+PLOT_MODES = [3]
 COMBINED_SOURCE_MODES = (1, 2, 3, 4)
 CACHE_DIR = Path("./data/profile_cache")
 USE_CACHE = True

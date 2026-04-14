@@ -8,8 +8,45 @@ from .utils import calculate_angular_velocity, skew_symmetric_matrix, damped_pse
 
 
 class CSM:
+    @staticmethod
+    def _resolve_segment_limits(segment_name, length, theta_max, r_min):
+        if theta_max is None and r_min is None:
+            raise ValueError(f"{segment_name} requires either theta_max or r_min.")
+
+        theta_limit_from_r = None if r_min is None else float(length) / float(r_min)
+
+        if theta_max is not None:
+            theta_max = float(theta_max)
+            if theta_max < 0:
+                raise ValueError(f"{segment_name} theta_max must be non-negative.")
+
+        if r_min is not None:
+            r_min = float(r_min)
+            if r_min <= 0:
+                raise ValueError(f"{segment_name} r_min must be positive.")
+
+        if theta_max is not None and theta_limit_from_r is not None:
+            if theta_max > theta_limit_from_r + 1e-12:
+                raise ValueError(
+                    f"{segment_name} has inconsistent constraints: "
+                    f"theta_max={theta_max} exceeds the radius-implied limit "
+                    f"{theta_limit_from_r} from r_min={r_min}."
+                )
+            effective_theta_max = theta_max
+            effective_r_min = r_min
+        elif theta_max is not None:
+            effective_theta_max = theta_max
+            effective_r_min = float(length) / effective_theta_max if effective_theta_max > 1e-12 else np.inf
+        else:
+            effective_theta_max = theta_limit_from_r
+            effective_r_min = r_min
+
+        kappa = 0.0 if effective_theta_max <= 1e-12 else effective_theta_max / float(length)
+        return effective_theta_max, effective_r_min, kappa
+
     def __init__(self, L_10, L_20, L_r0, L_s0, L_tool,
-                 theta1_max=np.pi/2, theta2_max=2*np.pi/3, delta_t=0.01, ri_min=None):
+                 theta1_max=None, theta2_max=None, delta_t=0.01,
+                 ri_min=None, r1_min=None, r2_min=None):
         """
         初始化连续体机器人模型
         参数:
@@ -18,10 +55,12 @@ class CSM:
             L_r0: rigid 段长度 (m)
             L_s0: base  段长度 (m)
             L_tool: tool  长度 (m)
-            theta1_max: segment 1的最大弯曲角度 (rad)
-            theta2_max: segment 2的最大弯曲角度 (rad)
+            theta1_max: segment 1的最大弯曲角度 (rad)，可省略但需提供 r1_min
+            theta2_max: segment 2的最大弯曲角度 (rad)，可省略但需提供 r2_min
             delta_t: 每步时间间隔 (s)
-            ri_min: 最小弯曲半径 (m)，用于限制最大曲率
+            ri_min: 对两段同时生效的最小弯曲半径 (m)，向后兼容
+            r1_min: segment 1 最小弯曲半径 (m)
+            r2_min: segment 2 最小弯曲半径 (m)
         """
         self.mode = 1
         self.delta_t = delta_t
@@ -39,21 +78,28 @@ class CSM:
         self.theta_2 = 0
         self.delta_1 = 0
         self.delta_2 = 0
-        self.theta1_max = float(theta1_max)
-        self.theta2_max = float(theta2_max)
-        self.ri_min = None if ri_min is None else float(ri_min)
+        shared_ri_min = None if ri_min is None else float(ri_min)
+        if shared_ri_min is not None and shared_ri_min <= 0:
+            raise ValueError("ri_min must be positive.")
 
-        self.kappa_10 = self.theta1_max / L_10
-        self.kappa_20 = self.theta2_max / L_20
-        if self.ri_min is not None:
-            if self.ri_min <= 0:
-                raise ValueError("ri_min must be positive.")
-            curvature_limit = 1.0 / self.ri_min
-            self.kappa_10 = min(self.kappa_10, curvature_limit)
-            self.kappa_20 = min(self.kappa_20, curvature_limit)
+        requested_r1_min = shared_ri_min if r1_min is None else float(r1_min)
+        requested_r2_min = shared_ri_min if r2_min is None else float(r2_min)
+
+        self.theta1_max, self.r1_min, self.kappa_10 = self._resolve_segment_limits(
+            "segment 1", L_10, theta1_max, requested_r1_min
+        )
+        self.theta2_max, self.r2_min, self.kappa_20 = self._resolve_segment_limits(
+            "segment 2", L_20, theta2_max, requested_r2_min
+        )
+
+        self.ri_min = shared_ri_min
+        if self.ri_min is None and np.isfinite(self.r1_min) and np.isfinite(self.r2_min):
+            if np.isclose(self.r1_min, self.r2_min):
+                self.ri_min = self.r1_min
 
         self.theta1_limit = self.kappa_10 * self.L_10
         self.theta2_limit = self.kappa_20 * self.L_20
+        
         self._seg_J = {
             1: {"v2": None, "w2": None, "v3": None, "w3": None},
             2: {"v2": None, "w2": None, "v3": None, "w3": None},
@@ -528,8 +574,10 @@ class CSM:
             L_r0=r["L_r0"],
             L_s0=r["L_s0"],
             L_tool=r["L_tool"],
-            theta1_max=r["theta1_max"],
-            theta2_max=r["theta2_max"],
+            theta1_max=r.get("theta1_max"),
+            theta2_max=r.get("theta2_max"),
             ri_min=r.get("ri_min"),
+            r1_min=r.get("r1_min"),
+            r2_min=r.get("r2_min"),
             delta_t=r["delta_t"]
         )
