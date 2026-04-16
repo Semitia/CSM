@@ -18,7 +18,7 @@ def _build_mode3_profile():
 
 def test_largest_mode3_box_shrinks_impossible_request():
     profile = _build_mode3_profile()
-    requested_size = np.array([50.0, 50.0, 40.0], dtype=float) / 1000.0
+    requested_size = np.array([90.0, 90.0, 80.0], dtype=float) / 1000.0
 
     with pytest.raises(ValueError):
         fit_centered_operation_box_in_mode3(profile, requested_size, top_margin_m=0.004)

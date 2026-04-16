@@ -97,8 +97,8 @@ class CSM:
             if np.isclose(self.r1_min, self.r2_min):
                 self.ri_min = self.r1_min
 
-        self.theta1_limit = self.kappa_10 * self.L_10
-        self.theta2_limit = self.kappa_20 * self.L_20
+        self.theta1_limit = self.max_theta1_for_length(self.L_10)
+        self.theta2_limit = self.max_theta2_for_length(self.L_20)
         
         self._seg_J = {
             1: {"v2": None, "w2": None, "v3": None, "w3": None},
@@ -128,6 +128,34 @@ class CSM:
         self.end2_ori = np.array([0, 0, 1], dtype=float)
         self.update()
         self.update_jacobians()
+
+    @staticmethod
+    def _length_dependent_theta_limit(length, theta_max, r_min):
+        length = max(float(length), 0.0)
+        if length <= 1e-12:
+            return 0.0
+
+        theta_limit = np.inf if theta_max is None else float(theta_max)
+        radius_limit = np.inf
+        if r_min is not None and np.isfinite(r_min):
+            radius_limit = length / float(r_min)
+        return float(min(theta_limit, radius_limit))
+
+    def max_theta1_for_length(self, length):
+        return self._length_dependent_theta_limit(length, self.theta1_max, self.r1_min)
+
+    def max_theta2_for_length(self, length):
+        return self._length_dependent_theta_limit(length, self.theta2_max, self.r2_min)
+
+    def _enforce_angle_constraints(self):
+        theta2_limit = self.max_theta2_for_length(self.L2)
+        if abs(self.theta_2) > theta2_limit:
+            self.theta_2 = theta2_limit * np.sign(self.theta_2)
+
+        if self.mode in (3, 4):
+            theta1_limit = self.max_theta1_for_length(self.L1)
+            if abs(self.theta_1) > theta1_limit:
+                self.theta_1 = theta1_limit * np.sign(self.theta_1)
 
     def reset(self):
         self.mode = 1
@@ -346,6 +374,7 @@ class CSM:
         self.theta_2 = theta_2
         self.delta_1 = delta_1
         self.delta_2 = delta_2
+        self._enforce_angle_constraints()
         self.update()
         self.update_jacobians()
 
@@ -551,10 +580,7 @@ class CSM:
             self.Ls = min(self.Ls, self.L_s0)
         else: # 没有base段，最多到mode3
             self.L1 = min(self.L1, self.L_10)
-        if abs(self.theta_2) > self.kappa_20 * self.L2:
-            self.theta_2 = self.kappa_20 * self.L2 * np.sign(self.theta_2)
-        if self.mode in (3, 4) and abs(self.theta_1) > self.kappa_10 * self.L1:
-            self.theta_1 = self.kappa_10 * self.L1 * np.sign(self.theta_1)
+        self._enforce_angle_constraints()
 
     @classmethod
     def from_config(cls, path):

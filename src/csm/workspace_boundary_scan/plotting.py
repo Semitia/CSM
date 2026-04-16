@@ -223,6 +223,18 @@ def save_profile_debug_figure(profile, options: BoundaryScanPlotOptions):
         name, role, curve = entry
         _plot_debug_curve(ax, curve, label=name, color="#8A8A8A" if role == "outer" else "#C28C62", linewidth=1.2, linestyle="--", alpha=0.55)
 
+    for entry in debug.get("candidate_segments", []):
+        if len(entry) != 3:
+            continue
+        name, role, curve = entry
+        _plot_debug_curve(ax, curve, label=name, color="#A0A0A0" if "outer" in role else "#B98B6A", linewidth=1.0, linestyle=":", alpha=0.4)
+
+    for entry in debug.get("discarded_segments", []):
+        if len(entry) != 3:
+            continue
+        name, role, curve = entry
+        _plot_debug_curve(ax, curve, label=name, color="#666666" if "outer" in role else "#9A6A43", linewidth=2.0, linestyle="--", alpha=0.65)
+
     for idx, segment in enumerate(debug.get("outer_segments", [])):
         _plot_debug_curve(ax, segment, label=f"outer_seg_{idx+1}", color="#1F5D78", linewidth=2.2, alpha=0.95)
     for idx, segment in enumerate(debug.get("inner_segments", [])):
@@ -242,6 +254,10 @@ def save_profile_debug_figure(profile, options: BoundaryScanPlotOptions):
             continue
         point = np.asarray(hit["point"], dtype=float) * 1000.0
         ax.scatter([point[0], -point[0]], [point[1], point[1]], s=50, color=color, zorder=5, label=hit_key)
+
+    for hit_name, hit in debug.get("overlap_hits", {}).items():
+        point = np.asarray(hit["point"], dtype=float) * 1000.0
+        ax.scatter([point[0], -point[0]], [point[1], point[1]], s=40, color="#444444", zorder=5, label=hit_name)
 
     ax.set_title(f"Mode {profile.mode} Debug Primitives")
     ax.set_xlabel("Radius [mm]")

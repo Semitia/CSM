@@ -62,6 +62,7 @@ class WorkspaceAnimationData:
 class BoundaryScanOptions:
     length_samples: int = 240
     angle_samples: int = 240
+    mode3_overlap_resolution_enabled: bool = True
     mode0_node_merge_tol: float = 2.0e-4
     mode0_endpoint_snap_tol: float = 3.0e-4
     mode0_route_length_samples: int = 72
@@ -223,6 +224,18 @@ def _polyline_suffix(curve, split, which="b"):
     return suffix
 
 
+def _split_polyline_at_hit(curve, split, which="a"):
+    curve = np.asarray(curve, dtype=float)
+    if split is None:
+        return curve.copy(), np.empty((0, 2), dtype=float)
+
+    prefix = _polyline_prefix(curve, split)
+    suffix = _polyline_suffix(curve, split, which=which)
+    if suffix.shape[0] > 0 and np.allclose(suffix[0], prefix[-1], atol=1e-9):
+        suffix = suffix[1:].copy()
+    return prefix, suffix
+
+
 def _concat_curve_segments(segments):
     cleaned = []
     for segment in segments:
@@ -240,6 +253,37 @@ def _concat_curve_segments(segments):
     if not cleaned:
         return np.empty((0, 2), dtype=float)
     return np.vstack(cleaned)
+
+
+def _intersection_progress(split, which="a"):
+    if split is None:
+        return math.inf
+    idx_key = "idx_b" if which == "b" else "idx_a"
+    t_key = "t_b" if which == "b" else "t_a"
+    return float(split[idx_key]) + float(split[t_key])
+
+
+def _split_is_interior(split, curve, which="a", eps=1.0e-6):
+    if split is None:
+        return False
+    curve = np.asarray(curve, dtype=float)
+    if curve.shape[0] < 2:
+        return False
+    progress = _intersection_progress(split, which=which)
+    return bool(eps < progress < (curve.shape[0] - 1) - eps)
+
+
+def _split_is_shared_endpoint(split, curve_a, curve_b, tol=1.0e-9):
+    if split is None:
+        return False
+    curve_a = np.asarray(curve_a, dtype=float)
+    curve_b = np.asarray(curve_b, dtype=float)
+    point = np.asarray(split["point"], dtype=float)
+    endpoints_a = (curve_a[0], curve_a[-1]) if curve_a.shape[0] else ()
+    endpoints_b = (curve_b[0], curve_b[-1]) if curve_b.shape[0] else ()
+    on_a = any(np.allclose(point, endpoint, atol=tol) for endpoint in endpoints_a)
+    on_b = any(np.allclose(point, endpoint, atol=tol) for endpoint in endpoints_b)
+    return bool(on_a and on_b)
 
 
 def _extend_curve_outer_endpoint_downward(curve_rz, min_z):
@@ -868,8 +912,73 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
         "tau2": BoundaryPrimitive("tau2", _sample_mode3_theta2_curve(csm, L1=csm.L_10, theta_1=csm.theta1_limit, theta_start=csm.theta2_limit, theta_end=0.0, angle_samples=angle_samples)),
         "tau3": BoundaryPrimitive("tau3", _sample_mode3_theta1_curve(csm, L1=csm.L_10, theta1_start=csm.theta1_limit, theta1_end=0.0, theta_2=0.0, angle_samples=angle_samples)),
     }
-    inner_segments = [primitives["tau0"].points_rz, primitives["tau1"].points_rz]
-    outer_segments = [primitives["tau2"].points_rz, primitives["tau3"].points_rz]
+
+    base_inner_segments = [primitives["tau0"].points_rz, primitives["tau1"].points_rz]
+    base_outer_segments = [primitives["tau2"].points_rz, primitives["tau3"].points_rz]
+    candidate_segments = [
+        ("tau0", "inner_candidate", primitives["tau0"].points_rz.copy()),
+        ("tau1", "inner_candidate", primitives["tau1"].points_rz.copy()),
+        ("tau2", "outer_candidate", primitives["tau2"].points_rz.copy()),
+        ("tau3", "outer_candidate", primitives["tau3"].points_rz.copy()),
+    ]
+    discarded_segments = []
+    overlap_hits = {}
+    chosen_hit_name = None
+    chosen_hit = None
+    chosen_profile_mode = "default"
+
+    hit_tau1_tau2 = _first_polyline_intersection(primitives["tau1"].points_rz, primitives["tau2"].points_rz)
+    if (
+        not _split_is_shared_endpoint(hit_tau1_tau2, primitives["tau1"].points_rz, primitives["tau2"].points_rz)
+        and _split_is_interior(hit_tau1_tau2, primitives["tau1"].points_rz, which="a")
+        and _split_is_interior(hit_tau1_tau2, primitives["tau2"].points_rz, which="b")
+    ):
+        overlap_hits["tau1_tau2"] = hit_tau1_tau2
+
+    hit_tau1_tau3 = _first_polyline_intersection(primitives["tau1"].points_rz, primitives["tau3"].points_rz)
+    if (
+        not _split_is_shared_endpoint(hit_tau1_tau3, primitives["tau1"].points_rz, primitives["tau3"].points_rz)
+        and _split_is_interior(hit_tau1_tau3, primitives["tau1"].points_rz, which="a")
+        and _split_is_interior(hit_tau1_tau3, primitives["tau3"].points_rz, which="b")
+    ):
+        overlap_hits["tau1_tau3"] = hit_tau1_tau3
+
+    inner_segments = [segment.copy() for segment in base_inner_segments]
+    outer_segments = [segment.copy() for segment in base_outer_segments]
+    if options.mode3_overlap_resolution_enabled and overlap_hits:
+        chosen_hit_name, chosen_hit = min(
+            overlap_hits.items(),
+            key=lambda item: (
+                _intersection_progress(item[1], which="a"),
+                _intersection_progress(item[1], which="b"),
+            ),
+        )
+        if chosen_hit_name == "tau1_tau3":
+            tau1_keep = _polyline_prefix(primitives["tau1"].points_rz, chosen_hit)
+            tau1_discard = _polyline_suffix(primitives["tau1"].points_rz, chosen_hit, which="a")
+            tau3_discard = _polyline_prefix(primitives["tau3"].points_rz, chosen_hit)
+            tau3_keep = _polyline_suffix(primitives["tau3"].points_rz, chosen_hit, which="b")
+            inner_segments = [primitives["tau0"].points_rz.copy(), tau1_keep]
+            outer_segments = [tau3_keep]
+            if tau1_discard.shape[0] > 0:
+                discarded_segments.append(("tau1_overlap_tail", "inner_discarded", tau1_discard))
+            discarded_segments.append(("tau2_overlap_branch", "outer_discarded", primitives["tau2"].points_rz.copy()))
+            if tau3_discard.shape[0] > 0:
+                discarded_segments.append(("tau3_overlap_prefix", "outer_discarded", tau3_discard))
+            chosen_profile_mode = "overlap_shell"
+        elif chosen_hit_name == "tau1_tau2":
+            tau1_keep = _polyline_prefix(primitives["tau1"].points_rz, chosen_hit)
+            tau1_discard = _polyline_suffix(primitives["tau1"].points_rz, chosen_hit, which="a")
+            tau2_discard = _polyline_prefix(primitives["tau2"].points_rz, chosen_hit)
+            tau2_keep = _polyline_suffix(primitives["tau2"].points_rz, chosen_hit, which="b")
+            inner_segments = [primitives["tau0"].points_rz.copy(), tau1_keep]
+            outer_segments = [tau2_keep, primitives["tau3"].points_rz.copy()]
+            if tau1_discard.shape[0] > 0:
+                discarded_segments.append(("tau1_overlap_tail", "inner_discarded", tau1_discard))
+            if tau2_discard.shape[0] > 0:
+                discarded_segments.append(("tau2_overlap_prefix", "outer_discarded", tau2_discard))
+            chosen_profile_mode = "overlap_trim_tau2"
+
     inner_curve = _concat_curve_segments(inner_segments)
     axis_connector = _build_axis_closure(inner_curve[-1], outer_segments[-1][-1])
     outer_path = _concat_curve_segments([segment[::-1] for segment in outer_segments[::-1]])
@@ -884,8 +993,14 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
         unreachable_closed_profiles_rz=[_close_curve_to_axis(inner_curve)],
         debug_data={
             "primitives": {name: primitive.points_rz.copy() for name, primitive in primitives.items()},
+            "candidate_segments": [(name, role, curve.copy()) for name, role, curve in candidate_segments],
+            "discarded_segments": [(name, role, curve.copy()) for name, role, curve in discarded_segments],
             "outer_segments": [segment.copy() for segment in outer_segments],
             "inner_segments": [segment.copy() for segment in inner_segments],
+            "overlap_hits": {name: dict(hit) for name, hit in overlap_hits.items()},
+            "chosen_hit_name": chosen_hit_name,
+            "chosen_hit": None if chosen_hit is None else dict(chosen_hit),
+            "chosen_profile_mode": chosen_profile_mode,
         },
     )
 

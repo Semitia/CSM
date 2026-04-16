@@ -5,6 +5,7 @@ smooth the reachable/unreachable contours, and revolve them into a paper-like 3D
 """
 import json
 import os
+import hashlib
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -33,7 +34,7 @@ FORCE_REBUILD_CACHE = False
 MODE_SAMPLE_RES = {
     1: {"length": 220, "theta1": 1, "theta2": 240},
     2: {"length": 180, "theta1": 1, "theta2": 220},
-    3: {"length": 90, "theta1": 90, "theta2": 90},
+    3: {"length": 60, "theta1": 60, "theta2": 60},
     4: {"length": 90, "theta1": 90, "theta2": 90},
 }
 
@@ -74,6 +75,7 @@ UNREACHABLE_ALPHA = 0.40
 SEPARATE_PLOTS = False
 OUTPUT_PATH = None
 FALLBACK_OUTPUT_PATH = Path("./data/plot_workspace_2_fallback.png")
+RAW_SCATTER_OUTPUT_PATH = Path("./data/plot_workspace_2_raw_scatter.png")
 FIGSIZE = (10, 10)
 VIEW_ELEV = 18
 VIEW_AZIM = -40
@@ -146,12 +148,29 @@ def _display_label_for_mode(mode):
 
 
 def _current_cache_metadata(mode):
+    config_sha256 = None
+    if CONFIG_PATH.exists():
+        config_sha256 = hashlib.sha256(CONFIG_PATH.read_bytes()).hexdigest()
     return {
         "config_name": CONFIG_NAME,
         "config_path": str(CONFIG_PATH),
+        "config_sha256": config_sha256,
         "mode": int(mode),
         "sample_cfg": MODE_SAMPLE_RES[mode],
     }
+
+
+def _segment_theta_upper_bound(csm, segment_index, length):
+    length = max(float(length), 0.0)
+    if segment_index == 1:
+        if hasattr(csm, "max_theta1_for_length"):
+            return float(csm.max_theta1_for_length(length))
+        return float(csm.kappa_10 * length)
+    if segment_index == 2:
+        if hasattr(csm, "max_theta2_for_length"):
+            return float(csm.max_theta2_for_length(length))
+        return float(csm.kappa_20 * length)
+    raise ValueError(f"Unsupported segment index: {segment_index}")
 
 
 def _load_profile_cache(mode):
@@ -248,18 +267,18 @@ def _count_mode_side_samples(csm, mode, sample_cfg):
     total = 0
     if mode == 1:
         for L2 in _linspace_from_zero(csm.L_20, length_res):
-            total += len(_linspace_from_zero(csm.kappa_20 * L2, theta2_res))
+            total += len(_linspace_from_zero(_segment_theta_upper_bound(csm, 2, L2), theta2_res))
     elif mode == 2:
         for _Lr in _linspace_from_zero(csm.L_r0, length_res):
-            total += len(_linspace_from_zero(csm.kappa_20 * csm.L2, theta2_res))
+            total += len(_linspace_from_zero(_segment_theta_upper_bound(csm, 2, csm.L2), theta2_res))
     elif mode == 3:
         for L1 in _linspace_from_zero(csm.L_10, length_res):
-            theta1_vals = _linspace_from_zero(csm.kappa_10 * L1, theta1_res)
-            total += len(theta1_vals) * len(_linspace_from_zero(csm.kappa_20 * csm.L2, theta2_res))
+            theta1_vals = _linspace_from_zero(_segment_theta_upper_bound(csm, 1, L1), theta1_res)
+            total += len(theta1_vals) * len(_linspace_from_zero(_segment_theta_upper_bound(csm, 2, csm.L2), theta2_res))
     elif mode == 4:
         for _Ls in _linspace_from_zero(csm.L_s0, length_res):
-            theta1_vals = _linspace_from_zero(csm.kappa_10 * csm.L1, theta1_res)
-            total += len(theta1_vals) * len(_linspace_from_zero(csm.kappa_20 * csm.L2, theta2_res))
+            theta1_vals = _linspace_from_zero(_segment_theta_upper_bound(csm, 1, csm.L1), theta1_res)
+            total += len(theta1_vals) * len(_linspace_from_zero(_segment_theta_upper_bound(csm, 2, csm.L2), theta2_res))
     else:
         raise ValueError(f"Unsupported mode: {mode}")
     return total
@@ -281,7 +300,7 @@ def sample_mode_side_points(csm, mode, sample_cfg):
         if mode == 1:
             for L2 in _linspace_from_zero(csm.L_20, length_res):
                 csm.L2 = L2
-                theta2_vals = _linspace_from_zero(csm.kappa_20 * L2, theta2_res)
+                theta2_vals = _linspace_from_zero(_segment_theta_upper_bound(csm, 2, L2), theta2_res)
                 for theta_2 in theta2_vals:
                     csm.theta_2 = theta_2
                     csm.update()
@@ -291,7 +310,7 @@ def sample_mode_side_points(csm, mode, sample_cfg):
         elif mode == 2:
             for Lr in _linspace_from_zero(csm.L_r0, length_res):
                 csm.Lr = Lr
-                theta2_vals = _linspace_from_zero(csm.kappa_20 * csm.L2, theta2_res)
+                theta2_vals = _linspace_from_zero(_segment_theta_upper_bound(csm, 2, csm.L2), theta2_res)
                 for theta_2 in theta2_vals:
                     csm.theta_2 = theta_2
                     csm.update()
@@ -303,10 +322,10 @@ def sample_mode_side_points(csm, mode, sample_cfg):
             csm.delta_2 = 0.0
             for L1 in _linspace_from_zero(csm.L_10, length_res):
                 csm.L1 = L1
-                theta1_vals = _linspace_from_zero(csm.kappa_10 * L1, theta1_res)
+                theta1_vals = _linspace_from_zero(_segment_theta_upper_bound(csm, 1, L1), theta1_res)
                 for theta_1 in theta1_vals:
                     csm.theta_1 = theta_1
-                    theta2_vals = _linspace_from_zero(csm.kappa_20 * csm.L2, theta2_res)
+                    theta2_vals = _linspace_from_zero(_segment_theta_upper_bound(csm, 2, csm.L2), theta2_res)
                     for theta_2 in theta2_vals:
                         csm.theta_2 = theta_2
                         csm.update()
@@ -318,10 +337,10 @@ def sample_mode_side_points(csm, mode, sample_cfg):
             csm.delta_2 = 0.0
             for Ls in _linspace_from_zero(csm.L_s0, length_res):
                 csm.Ls = Ls
-                theta1_vals = _linspace_from_zero(csm.kappa_10 * csm.L1, theta1_res)
+                theta1_vals = _linspace_from_zero(_segment_theta_upper_bound(csm, 1, csm.L1), theta1_res)
                 for theta_1 in theta1_vals:
                     csm.theta_1 = theta_1
-                    theta2_vals = _linspace_from_zero(csm.kappa_20 * csm.L2, theta2_res)
+                    theta2_vals = _linspace_from_zero(_segment_theta_upper_bound(csm, 2, csm.L2), theta2_res)
                     for theta_2 in theta2_vals:
                         csm.theta_2 = theta_2
                         csm.update()
@@ -1034,7 +1053,7 @@ def _one_minus_cos_over_theta(theta_vals):
 
 
 def _build_mode1_profile_from_geometry(csm, num_samples=None):
-    theta_max = float(csm.kappa_20 * csm.L_20)
+    theta_max = _segment_theta_upper_bound(csm, 2, csm.L_20)
     tool_length = float(csm.L_tool)
     kappa = float(csm.kappa_20)
     arc_length = float(csm.L_20)
@@ -2696,6 +2715,35 @@ def draw_mode_side_scatter(ax, side_points, mode):
         ax.set_ylabel("Z")
 
 
+def _save_raw_scatter_debug_figure(sampled_points, profiles, manipulator_states):
+    if not SHOW_SAMPLE_SCATTER:
+        return
+
+    scatter_modes = []
+    for mode in PLOT_MODES:
+        if mode == 0:
+            scatter_modes.extend([source_mode for source_mode in COMBINED_SOURCE_MODES if source_mode in sampled_points])
+        elif mode in sampled_points:
+            scatter_modes.append(mode)
+    scatter_modes = list(dict.fromkeys(scatter_modes))
+    if not scatter_modes:
+        return
+
+    fig, ax = plt.subplots(figsize=(5.4, 5.4))
+    for scatter_mode in scatter_modes:
+        draw_mode_side_scatter(ax, sampled_points.get(scatter_mode), scatter_mode)
+
+    all_profiles = list(profiles.values()) if profiles else []
+    scatter_input_points = {mode: sampled_points[mode] for mode in scatter_modes if mode in sampled_points}
+    configure_side_view_axes(ax, all_profiles, manipulator_states, scatter_input_points)
+    ax.set_title("Raw Sample Scatter")
+    RAW_SCATTER_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(RAW_SCATTER_OUTPUT_PATH, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved raw scatter debug figure to: {RAW_SCATTER_OUTPUT_PATH.resolve()}")
+
+
 def overlay_profile_curves(ax, profile, mode):
     display_color = _display_color_for_mode(mode)
     if mode == 0 and "mode0_void_r" in profile:
@@ -3027,17 +3075,17 @@ def _sample_random_mode_state(csm, mode, rng):
 
     if mode == 1:
         L2 = float(rng.uniform(0.0, csm.L_20))
-        theta_2 = float(rng.uniform(0.0, csm.kappa_20 * L2)) if L2 > 0.0 else 0.0
+        theta_2 = float(rng.uniform(0.0, _segment_theta_upper_bound(csm, 2, L2))) if L2 > 0.0 else 0.0
         delta_2 = float(rng.uniform(0.0, 2.0 * np.pi))
     elif mode == 2:
         Lr = float(rng.uniform(0.0, csm.L_r0))
-        theta_2 = float(rng.uniform(0.0, csm.kappa_20 * csm.L_20))
+        theta_2 = float(rng.uniform(0.0, _segment_theta_upper_bound(csm, 2, csm.L_20)))
         delta_2 = float(rng.uniform(0.0, 2.0 * np.pi))
     elif mode == 3:
         L1 = float(rng.uniform(0.0, csm.L_10))
         Lr = float(csm.L_r0)
-        theta_1 = float(rng.uniform(0.0, csm.kappa_10 * L1)) if L1 > 0.0 else 0.0
-        theta_2 = float(rng.uniform(0.0, csm.kappa_20 * csm.L_20))
+        theta_1 = float(rng.uniform(0.0, _segment_theta_upper_bound(csm, 1, L1))) if L1 > 0.0 else 0.0
+        theta_2 = float(rng.uniform(0.0, _segment_theta_upper_bound(csm, 2, csm.L_20)))
         delta_1 = float(rng.uniform(0.0, 2.0 * np.pi))
         delta_2 = float(rng.uniform(0.0, 2.0 * np.pi))
     elif mode == 4:
@@ -3045,8 +3093,8 @@ def _sample_random_mode_state(csm, mode, rng):
         L2 = float(csm.L_20)
         Lr = float(csm.L_r0)
         Ls = float(rng.uniform(0.0, csm.L_s0))
-        theta_1 = float(rng.uniform(0.0, csm.kappa_10 * csm.L_10))
-        theta_2 = float(rng.uniform(0.0, csm.kappa_20 * csm.L_20))
+        theta_1 = float(rng.uniform(0.0, _segment_theta_upper_bound(csm, 1, csm.L_10)))
+        theta_2 = float(rng.uniform(0.0, _segment_theta_upper_bound(csm, 2, csm.L_20)))
         delta_1 = float(rng.uniform(0.0, 2.0 * np.pi))
         delta_2 = float(rng.uniform(0.0, 2.0 * np.pi))
     else:
@@ -3339,6 +3387,8 @@ def main():
     profiles, sampled_points, manipulator_states = generate_profiles()
     if not profiles:
         raise RuntimeError("No valid workspace profiles were generated.")
+
+    _save_raw_scatter_debug_figure(sampled_points, profiles, manipulator_states)
 
     if SEPARATE_PLOTS:
         fig = plt.figure(figsize=FIGSIZE)
