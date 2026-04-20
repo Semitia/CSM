@@ -7,6 +7,7 @@ import argparse
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import warnings
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -97,6 +98,46 @@ def _csm_signature(csm: CSM) -> dict[str, float]:
         "theta2_limit_rad": float(csm.theta2_limit),
         "ri_min_m": None if csm.r1_min is None else float(csm.r1_min),
     }
+
+
+def _assert_matching_csm_signature(csm: CSM, saved_signature: dict[str, object]) -> None:
+    current = _csm_signature(csm)
+    mismatches: list[str] = []
+    for key, current_value in current.items():
+        saved_value = saved_signature.get(key)
+        if saved_value is None and current_value is None:
+            continue
+        if saved_value is None or current_value is None:
+            mismatches.append(f"{key}: saved={saved_value}, current={current_value}")
+            continue
+        if abs(float(saved_value) - float(current_value)) > 1e-9:
+            mismatches.append(f"{key}: saved={saved_value}, current={current_value}")
+    if mismatches:
+        mismatch_text = "; ".join(mismatches)
+        warnings.warn(
+            "Loaded box info was exported from a different CSM configuration. "
+            "Continuing with the saved box anyway. "
+            f"Mismatches: {mismatch_text}",
+            stacklevel=2,
+        )
+
+
+def _load_box_info(path: Path, *, csm: CSM) -> tuple[OperationBox, float]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    schema_version = int(payload.get("schema_version", -1))
+    if schema_version != BOX_INFO_SCHEMA_VERSION:
+        raise ValueError(f"Unsupported box info schema_version={schema_version}.")
+    saved_signature = payload.get("csm_signature")
+    if not isinstance(saved_signature, dict):
+        raise ValueError("Box info file is missing csm_signature.")
+    _assert_matching_csm_signature(csm, saved_signature)
+    center_mm = np.asarray(payload["box_center_mm"], dtype=float)
+    size_mm = np.asarray(payload["box_size_mm"], dtype=float)
+    if center_mm.shape != (3,) or size_mm.shape != (3,):
+        raise ValueError("Box info must contain 3D box_center_mm and box_size_mm.")
+    box = OperationBox(center_xyz=center_mm / MM_PER_M, size_xyz=size_mm / MM_PER_M)
+    box_scale = float(payload.get("box_scale", 1.0))
+    return box, box_scale
 
 
 def _box_info_payload(
@@ -467,19 +508,48 @@ def build_figure(
     top_margin_mm: float,
     output_path: Path | None,
     show_figure: bool,
+    show_box: bool = True,
+    box_override: OperationBox | None = None,
+    box_scale_override: float | None = None,
     style: FigureStyle = DEFAULT_STYLE,
-) -> tuple[OperationBox, float]:
+) -> tuple[OperationBox | None, float | None]:
+    MODE3_SEGMENT_ROLES = {
+        "tau2": "inner",
+    }
+    
     profile = build_workspace_profiles(
         csm,
         modes=[3],
-        options=BoundaryScanOptions(length_samples=220, angle_samples=220),
+        options=BoundaryScanOptions(
+            length_samples=220, 
+            angle_samples=220,
+            mode3_segment_roles=MODE3_SEGMENT_ROLES,
+        ),
     )[0]
-    box, box_scale = fit_largest_centered_operation_box_in_mode3(
-        profile,
-        size_xyz_m=box_size_mm / 1000.0,
-        top_margin_m=top_margin_mm / 1000.0,
-    )
-    arm_geometry = _arm_geometry_mm(csm, box)
+    box: OperationBox | None = None
+    box_scale: float | None = None
+    arm_geometry = None
+    if show_box:
+        if box_override is not None:
+            box = box_override
+            box_scale = 1.0 if box_scale_override is None else float(box_scale_override)
+        else:
+            box, box_scale = fit_largest_centered_operation_box_in_mode3(
+                profile,
+                size_xyz_m=box_size_mm / 1000.0,
+                top_margin_m=top_margin_mm / 1000.0,
+            )
+        try:
+            arm_geometry = _arm_geometry_mm(csm, box)
+        except RuntimeError:
+            if box_override is None:
+                raise
+            warnings.warn(
+                "Loaded operation box does not contain a reachable mode-3 overlay pose. "
+                "Drawing the box without the arm overlay.",
+                stacklevel=2,
+            )
+            arm_geometry = None
 
     fig = plt.figure(figsize=(12.8, 6.0), constrained_layout=True)
     gs = fig.add_gridspec(1, 2, width_ratios=(1.7, 1.0))
@@ -506,19 +576,21 @@ def build_figure(
 
     collection_count = len(ax_main.collections)
     line_count = len(ax_main.lines)
-    draw_operation_box(
-        ax_main,
-        _box_to_display_units(box, 1000.0),
-        face_color=style.box_face_color,
-        edge_color=style.box_edge_color,
-        alpha=style.box_alpha_3d,
-        linewidth=style.box_linewidth_3d,
-    )
+    if box is not None:
+        draw_operation_box(
+            ax_main,
+            _box_to_display_units(box, 1000.0),
+            face_color=style.box_face_color,
+            edge_color=style.box_edge_color,
+            alpha=style.box_alpha_3d,
+            linewidth=style.box_linewidth_3d,
+        )
     box_artists = list(ax_main.collections[collection_count:]) + list(ax_main.lines[line_count:])
 
     collection_count = len(ax_main.collections)
     line_count = len(ax_main.lines)
-    _draw_detailed_arm_3d(ax_main, arm_geometry)
+    if arm_geometry is not None:
+        _draw_detailed_arm_3d(ax_main, arm_geometry)
     arm_artists = list(ax_main.collections[collection_count:]) + list(ax_main.lines[line_count:])
 
     _set_artists_zorder(workspace_artists, 1.0)
@@ -532,13 +604,16 @@ def build_figure(
 
     ax_side = fig.add_subplot(gs[0, 1])
     draw_side_profile(ax_side, profile, color=style.reachable_color, label="Mode3", options=plot_options)
-    _draw_side_box(ax_side, _box_to_display_units(box, 1000.0), style)
-    _draw_detailed_arm_side(ax_side, arm_geometry)
+    if box is not None:
+        _draw_side_box(ax_side, _box_to_display_units(box, 1000.0), style)
+    if arm_geometry is not None:
+        _draw_detailed_arm_side(ax_side, arm_geometry)
     configure_side_axes(ax_side, [profile])
     ax_side.set_title(style.side_title)
     ax_side.grid(True, alpha=style.grid_alpha)
 
-    fig.suptitle(style.figure_title, fontsize=14)
+    fig_title = style.figure_title if show_box else "Mode3 Translation Workspace"
+    fig.suptitle(fig_title, fontsize=14)
 
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -552,13 +627,15 @@ def build_figure(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render a mode3 translation-workspace illustration.")
-    parser.add_argument("--config", default="config/csm_cfg_3mm_3.yaml", help="CSM config path.")
+    parser.add_argument("--config", default="config/csm_cfg_3mm_1.yaml", help="CSM config path.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output figure path.")
+    parser.add_argument("--load-box-info", help="Optional JSON path exported earlier; reuses exactly the same operation box.")
     parser.add_argument("--save-box-info", help="Optional JSON path to save the fitted operation-box definition.")
     parser.add_argument("--box-size-mm", default="50,50,40", help="Operation box size in millimeters: sx,sy,sz.")
     parser.add_argument("--box-width-mm", type=float, help="Convenience option for symmetric square base: sets sx=sy=box-width-mm.")
     parser.add_argument("--box-height-mm", type=float, help="Convenience option for symmetric square base height sz.")
     parser.add_argument("--top-margin-mm", default=DEFAULT_TOP_MARGIN_MM, type=float, help="Top clearance to workspace roof.")
+    parser.add_argument("--hide-box", action="store_true", help="Do not draw the operation box or arm overlay; show workspace only.")
     parser.add_argument("--hide", action="store_true", help="Render without opening a window.")
     args = parser.parse_args()
 
@@ -568,15 +645,22 @@ def main() -> None:
         box_width_mm=args.box_width_mm,
         box_height_mm=args.box_height_mm,
     )
+    loaded_box = None
+    loaded_box_scale = None
+    if args.load_box_info:
+        loaded_box, loaded_box_scale = _load_box_info(Path(args.load_box_info), csm=csm)
     box, box_scale = build_figure(
         csm=csm,
         box_size_mm=requested_box_size_mm,
         top_margin_mm=float(args.top_margin_mm),
         output_path=Path(args.output),
         show_figure=not args.hide,
+        show_box=not args.hide_box,
+        box_override=loaded_box,
+        box_scale_override=loaded_box_scale,
         style=DEFAULT_STYLE,
     )
-    if args.save_box_info:
+    if args.save_box_info and box is not None and box_scale is not None:
         box_info_path = Path(args.save_box_info)
         _save_box_info(
             box_info_path,
@@ -589,12 +673,19 @@ def main() -> None:
         )
         print(f"Saved box info to: {box_info_path.resolve()}")
     print(f"Saved translation figure to: {Path(args.output).resolve()}")
-    if box_scale < 0.999:
+    if args.hide_box:
+        print("Operation box display: disabled")
+        return
+    if box is None or box_scale is None:
+        return
+    if box_scale < 0.999 and loaded_box is None:
         print(
             "Requested box was uniformly scaled to fit mode3:",
             f"scale={box_scale:.3f}",
             f"requested_mm={requested_box_size_mm.round(2).tolist()}",
         )
+    if loaded_box is not None:
+        print(f"Loaded operation box from: {Path(args.load_box_info).resolve()}")
     print(f"Operation box center [mm]: {(1000.0 * box.center_xyz).round(2).tolist()}")
     print(f"Operation box size   [mm]: {(1000.0 * box.size_xyz).round(2).tolist()}")
 

@@ -37,6 +37,38 @@ class BoundaryScanPlotOptions:
     mode_colors: dict[int, str] = field(default_factory=lambda: dict(DEFAULT_MODE_COLORS))
     unreachable_color: str = "#D79A6B"
     outer_contour_color: str = "#2D5F73"
+    title_fontsize: float = 16.0
+    label_fontsize: float = 14.0
+    tick_labelsize: float = 12.0
+    legend_fontsize: float = 12.0
+
+
+def _apply_axes_text_style(ax, options: BoundaryScanPlotOptions) -> None:
+    ax.tick_params(axis="both", which="major", labelsize=options.tick_labelsize)
+    zaxis = getattr(ax, "zaxis", None)
+    if zaxis is not None:
+        ax.tick_params(axis="z", which="major", labelsize=options.tick_labelsize)
+
+    xlabel = ax.get_xlabel()
+    ylabel = ax.get_ylabel()
+    title = ax.get_title()
+    zlabel = ax.get_zlabel() if hasattr(ax, "get_zlabel") else ""
+
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=options.label_fontsize)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=options.label_fontsize)
+    if zlabel:
+        ax.set_zlabel(zlabel, fontsize=options.label_fontsize)
+    if title:
+        ax.set_title(title, fontsize=options.title_fontsize)
+
+
+def _apply_legend_text_style(legend, options: BoundaryScanPlotOptions) -> None:
+    if legend is None:
+        return
+    for text in legend.get_texts():
+        text.set_fontsize(options.legend_fontsize)
 
 
 def has_interactive_display():
@@ -263,10 +295,20 @@ def save_profile_debug_figure(profile, options: BoundaryScanPlotOptions):
     ax.set_xlabel("Radius [mm]")
     ax.set_ylabel("Z [mm]")
     configure_side_axes(ax, [profile])
+    _apply_axes_text_style(ax, options)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
         unique = dict(zip(labels, handles))
-        ax.legend(unique.values(), unique.keys(), loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, frameon=False)
+        legend = ax.legend(
+            unique.values(),
+            unique.keys(),
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            borderaxespad=0.0,
+            frameon=False,
+            fontsize=options.legend_fontsize,
+        )
+        _apply_legend_text_style(legend, options)
     fig.tight_layout()
     debug_path = debug_output_dir / f"mode{profile.mode}_debug.png"
     fig.savefig(debug_path, dpi=240, bbox_inches="tight")
@@ -291,11 +333,22 @@ def plot_workspace_profiles(profiles, options: BoundaryScanPlotOptions | None = 
         configure_side_axes(ax2d, [profile])
         ax3d.set_title(f"Mode {profile.mode} Workspace")
         ax2d.set_title(f"Mode {profile.mode} Side View")
+        _apply_axes_text_style(ax3d, options)
+        _apply_axes_text_style(ax2d, options)
 
         handles, labels = ax2d.get_legend_handles_labels()
         if handles:
             unique = dict(zip(labels, handles))
-            ax2d.legend(unique.values(), unique.keys(), loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, frameon=False)
+            legend = ax2d.legend(
+                unique.values(),
+                unique.keys(),
+                loc="upper left",
+                bbox_to_anchor=(1.02, 1.0),
+                borderaxespad=0.0,
+                frameon=False,
+                fontsize=options.legend_fontsize,
+            )
+            _apply_legend_text_style(legend, options)
 
         save_profile_debug_figure(profile, options)
 
@@ -326,6 +379,8 @@ def plot_mode3_primitives_debug(profile, output_path=None, show_figure=False):
         print("Warning: No primitives data in profile.debug_data")
         return None
 
+    style_options = BoundaryScanPlotOptions(show_figure=show_figure)
+
     primitives = profile.debug_data['primitives']
     colors = {
         'tau0': '#1f77b4',      # 蓝色
@@ -350,16 +405,18 @@ def plot_mode3_primitives_debug(profile, output_path=None, show_figure=False):
     ax.axhline(y=0, color='k', linestyle='--', alpha=0.3, linewidth=1)
     ax.axvline(x=0, color='k', linestyle='--', alpha=0.3, linewidth=1)
 
-    ax.set_xlabel('Radius [m]', fontsize=12)
-    ax.set_ylabel('Z [m]', fontsize=12)
+    ax.set_xlabel('Radius [m]')
+    ax.set_ylabel('Z [m]')
 
     # 添加标题，显示profile mode
     profile_mode = profile.debug_data.get('chosen_profile_mode', 'unknown')
-    ax.set_title(f'Mode 3 Primitives (profile_mode: {profile_mode})', fontsize=14, fontweight='bold')
+    ax.set_title(f'Mode 3 Primitives (profile_mode: {profile_mode})', fontweight='bold')
 
-    ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
+    legend = ax.legend(loc='upper right', fontsize=style_options.legend_fontsize, framealpha=0.9)
+    _apply_legend_text_style(legend, style_options)
     ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
     ax.set_aspect('equal')
+    _apply_axes_text_style(ax, style_options)
 
     fig.tight_layout()
 

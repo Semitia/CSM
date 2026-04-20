@@ -51,6 +51,10 @@ OUTPUT_DPI = 180
 MM_PER_M = 1000.0
 BOX_INFO_SCHEMA_VERSION = 1
 POSITION_SEED_RANDOM_SAMPLES = 2500
+DEFAULT_PANEL_TARGET_SPECS = [
+    ("Vertex (+1, -1, +1)", np.array([1.0, -1.0, 1.0], dtype=float), 20260411),
+    # ("Vertex (+1, -1, -1)", np.array([1.0, -1.0, -1.0], dtype=float), 20260411),
+]
 
 
 @dataclass(frozen=True)
@@ -102,8 +106,6 @@ def _parse_box_size_mm(text: str) -> np.ndarray:
     if values.shape != (3,):
         raise ValueError("Expected --box-size-mm as 'sx,sy,sz'.")
     return values
-
-
 def _csm_signature(csm: CSM) -> dict[str, float]:
     return {
         "L_10_m": float(csm.L_10),
@@ -509,7 +511,14 @@ def _solve_panel_state_with_fallback_scan(
 
 
 def _resolve_panel_state(csm: CSM, point_xyz: np.ndarray, seed: int, probe) -> PanelSolution:
-    return _solve_panel_state_from_probe_directions(csm, point_xyz, seed, probe)
+    try:
+        return _solve_panel_state(csm, point_xyz, seed)
+    except RuntimeError:
+        pass
+    try:
+        return _solve_panel_state_with_fallback_scan(csm, point_xyz, seed, probe)
+    except RuntimeError:
+        return _approximate_panel_state(csm, point_xyz, seed, probe)
 
 
 def _fast_panel_solution_from_probe(
@@ -530,13 +539,20 @@ def _fast_panel_solution_from_probe(
     return _approximate_panel_state(csm, point_xyz, seed, probe)
 
 
-def _panel_targets(box: OperationBox) -> list[PanelTarget]:
+def _panel_targets(
+    box: OperationBox,
+    target_specs: list[tuple[str, np.ndarray, int]] | None = None,
+) -> list[PanelTarget]:
     center = np.asarray(box.center_xyz, dtype=float)
     half = np.asarray(box.half_size_xyz, dtype=float)
+    specs = DEFAULT_PANEL_TARGET_SPECS if target_specs is None else target_specs
     return [
-        PanelTarget("Vertex (+1, -1, +1)", center + np.array([-1.0, 1.0, 1.0], dtype=float) * half, 20260410),
-        PanelTarget("Vertex (+1, -1, -1)", center + np.array([1.0, -1.0, -1.0], dtype=float) * half, 20260411),
-        PanelTarget("Inner Offset (+0.18, -0.12, -0.10)", center + np.array([0.2, -0.15, -0.10], dtype=float) * half, 20260412),
+        PanelTarget(
+            title=title,
+            point_xyz=center + np.asarray(offset_scale_xyz, dtype=float) * half,
+            seed=int(seed),
+        )
+        for title, offset_scale_xyz, seed in specs
     ]
 
 
@@ -755,6 +771,7 @@ def build_figure(
     *,
     csm: CSM,
     box_size_mm: np.ndarray,
+    panel_target_specs: list[tuple[str, np.ndarray, int]] | None = None,
     top_margin_mm: float,
     output_path: Path | None,
     show_figure: bool,
@@ -797,7 +814,9 @@ def build_figure(
 
     solutions: list[PanelSolution] = []
     probes = []
-    targets = _panel_targets(box)
+    targets = _panel_targets(box, panel_target_specs)
+    if not targets:
+        raise ValueError("At least one panel target is required.")
     for panel_idx, target in enumerate(targets, start=1):
         probe_start = time.perf_counter()
         probe = build_dexterous_probe(
@@ -907,7 +926,7 @@ def build_figure(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render a mode3 dexterous-workspace illustration.")
-    parser.add_argument("--config", default="config/csm_cfg_3mm.yaml", help="CSM config path.")
+    parser.add_argument("--config", default="config/csm_cfg_3mm_2.yaml", help="CSM config path.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output figure path.")
     parser.add_argument("--load-box-info", help="Optional JSON path exported by the translation script; reuses exactly the same box.")
     parser.add_argument("--box-size-mm", default="50,50,40", help="Operation box size in millimeters: sx,sy,sz.")
@@ -920,6 +939,8 @@ def main() -> None:
     csm = CSM.from_config(Path(args.config))
     _log_timing(args.timing, "load config", main_start, config=args.config)
     requested_box_size_mm = _parse_box_size_mm(args.box_size_mm)
+    # Edit these targets directly in code. Coordinates are relative to box half-size.
+    panel_target_specs = list(DEFAULT_PANEL_TARGET_SPECS)
     loaded_box = None
     loaded_box_scale = None
     if args.load_box_info:
@@ -927,6 +948,7 @@ def main() -> None:
     box, solutions, box_scale = build_figure(
         csm=csm,
         box_size_mm=requested_box_size_mm,
+        panel_target_specs=panel_target_specs,
         top_margin_mm=float(args.top_margin_mm),
         output_path=Path(args.output),
         show_figure=not args.hide,
@@ -945,6 +967,17 @@ def main() -> None:
         )
     print(f"Operation box center [mm]: {(1000.0 * box.center_xyz).round(2).tolist()}")
     print(f"Operation box size   [mm]: {(1000.0 * box.size_xyz).round(2).tolist()}")
+    print(
+        "Panel targets:",
+        [
+            {
+                "title": title,
+                "offset_scale_xyz": np.asarray(offset_scale_xyz, dtype=float).round(4).tolist(),
+                "seed": int(seed),
+            }
+            for title, offset_scale_xyz, seed in panel_target_specs
+        ],
+    )
     for solution in solutions:
         print(
             "Panel:",

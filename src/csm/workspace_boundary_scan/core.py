@@ -1111,7 +1111,17 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
         outer_segments_list.append(primitives["tau3"].points_rz)
 
         # 应用用户手动指定的segment roles（如果有）
-        segment_roles = _resolve_mode3_segment_roles(options, primitives.keys())
+        if options.mode3_segment_roles:
+            for name, role in options.mode3_segment_roles.items():
+                if name not in segment_roles:
+                    valid = ", ".join(sorted(segment_roles.keys()))
+                    raise ValueError(f"Unknown mode3 segment '{name}'. Expected one of: {valid}")
+                normalized = str(role).strip().lower()
+                if normalized not in {"inner", "outer"}:
+                    raise ValueError(
+                        f"Invalid role '{role}' for mode3 segment '{name}'. Expected 'inner' or 'outer'."
+                    )
+                segment_roles[name] = normalized
 
         base_outer_segments = outer_segments_list
     else:

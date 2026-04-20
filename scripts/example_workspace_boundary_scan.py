@@ -21,20 +21,21 @@ STATIC_OUTPUT_PATH = Path("./data/workspace_boundary_scan_example.png")
 DEBUG_OUTPUT_DIR = Path("./data/workspace_boundary_scan_debug")
 MODE3_SEGMENT_ROLES = {
     # Optional manual overrides for the mode 3 scan-line classification.
-    # Valid keys: tau0, tau1, tau2, tau3
+    # Valid keys depend on the configuration:
+    #   - theta1 not constrained: tau0, tau1, tau2, tau3
+    #   - theta1 constrained: tau0, tau1, tau2 (optional), tau1_prime, tau2_prime (optional), tau3
     # Valid values: "inner", "outer"
     #
     # Only the segments listed here are forced. Any omitted segment keeps the
     # existing automatic role.
     #
     # Example:
-    # "tau2": "inner",
     "tau2": "inner",
 }
 
 
 def main():
-    csm = CSM.from_config(Path("./config/csm_cfg_3mm_2.yaml"))
+    csm = CSM.from_config(Path("./config/csm_cfg_3mm_1.yaml"))
     modes = [3]
     scan_options = BoundaryScanOptions(
         length_samples=180,

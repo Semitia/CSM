@@ -55,6 +55,39 @@ class DexterousPlotOptions:
     family_hull_tolerance: float = 0.02
     analytic_fill_min_coverage: float = 0.9
     show_patch_only_debug: bool = True
+    title_fontsize: float = 16.0
+    label_fontsize: float = 14.0
+    tick_labelsize: float = 12.0
+    legend_fontsize: float = 12.0
+    debug_text_fontsize: float = 12.0
+
+
+def _apply_axes_text_style(ax, options: DexterousPlotOptions) -> None:
+    ax.tick_params(axis="both", which="major", labelsize=options.tick_labelsize)
+    zaxis = getattr(ax, "zaxis", None)
+    if zaxis is not None:
+        ax.tick_params(axis="z", which="major", labelsize=options.tick_labelsize)
+
+    xlabel = ax.get_xlabel()
+    ylabel = ax.get_ylabel()
+    title = ax.get_title()
+    zlabel = ax.get_zlabel() if hasattr(ax, "get_zlabel") else ""
+
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=options.label_fontsize)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=options.label_fontsize)
+    if zlabel:
+        ax.set_zlabel(zlabel, fontsize=options.label_fontsize)
+    if title:
+        ax.set_title(title, fontsize=options.title_fontsize)
+
+
+def _apply_legend_text_style(legend, options: DexterousPlotOptions) -> None:
+    if legend is None:
+        return
+    for text in legend.get_texts():
+        text.set_fontsize(options.legend_fontsize)
 
 
 def _orthonormal_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -1099,7 +1132,7 @@ def plot_dexterous_probe(ax, probe, *, csm: CSM | None = None, options: Dexterou
     ax.set_title(probe.label or "Dexterous Probe")
 
 
-def _plot_symmetry_debug(ax, probe) -> None:
+def _plot_symmetry_debug(ax, probe, options: DexterousPlotOptions) -> None:
     theta = np.linspace(0.0, 2.0 * math.pi, 300)
     ax.plot(np.cos(theta), np.sin(theta), color="#94A3B8", linewidth=1.4)
     if probe.feasible_directions_sym.size:
@@ -1146,7 +1179,8 @@ def _plot_symmetry_debug(ax, probe) -> None:
     ax.set_ylabel(r"$a_{sz}$")
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(handles, labels, loc="lower left", frameon=False)
+        legend = ax.legend(handles, labels, loc="lower left", frameon=False, fontsize=options.legend_fontsize)
+        _apply_legend_text_style(legend, options)
 
 
 def _plot_sphere_mapping_debug(ax, probe, options: DexterousPlotOptions) -> None:
@@ -1246,7 +1280,8 @@ def _plot_mask_debug(ax, probe, options: DexterousPlotOptions) -> dict:
     ax.set_title(title)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(handles, labels, loc="lower left", frameon=False)
+        legend = ax.legend(handles, labels, loc="lower left", frameon=False, fontsize=options.legend_fontsize)
+        _apply_legend_text_style(legend, options)
     return geom
 
 
@@ -1288,7 +1323,7 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
 
     fig = plt.figure(figsize=(18.0, 10.5))
     ax1 = fig.add_subplot(2, 4, 1)
-    _plot_symmetry_debug(ax1, probe)
+    _plot_symmetry_debug(ax1, probe, options)
     ax2 = fig.add_subplot(2, 4, 2)
     geom = _plot_mask_debug(ax2, probe, options)
     ax3 = fig.add_subplot(2, 4, 3)
@@ -1371,7 +1406,7 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
                 f"{fam.get('family_id')}: {fam.get('primitive_type')} "
                 f"err={fam.get('fit_error'):.4g} n={fam.get('point_count')}"
             )
-    ax7.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=10)
+    ax7.text(0.0, 1.0, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=options.debug_text_fontsize)
     render_lines = [
         f"sphere_alpha: {options.sphere_alpha}",
         f"patch_alpha: {options.patch_alpha}",
@@ -1380,7 +1415,9 @@ def save_probe_debug_figure(probe, options: DexterousPlotOptions) -> None:
         f"patch_antialiased: {options.patch_antialiased}",
         f"show_patch_only_debug: {options.show_patch_only_debug}",
     ]
-    ax8.text(0.0, 1.0, "\n".join(render_lines), va="top", ha="left", family="monospace", fontsize=10)
+    ax8.text(0.0, 1.0, "\n".join(render_lines), va="top", ha="left", family="monospace", fontsize=options.debug_text_fontsize)
+    for axis in (ax1, ax2, ax3, ax4, ax5, ax6):
+        _apply_axes_text_style(axis, options)
     fig.tight_layout()
     fig.savefig(output_dir / f"{safe_label}_debug.png", dpi=220, bbox_inches="tight")
     plt.close(fig)
@@ -1402,6 +1439,7 @@ def render_dexterous_figure(probes, *, csm: CSM, options: DexterousPlotOptions |
     for idx, probe in enumerate(probes, start=1):
         ax = fig.add_subplot(rows, cols, idx, projection="3d")
         plot_dexterous_probe(ax, probe, csm=csm, options=options)
+        _apply_axes_text_style(ax, options)
         save_probe_debug_figure(probe, options)
 
     fig.tight_layout()
