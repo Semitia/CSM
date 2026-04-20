@@ -16,7 +16,7 @@ DEFAULT_PROBES_MM = [
     # [2.63,0,35],
     # [26.75,0,22.82],
     # [20,0,14],
-    [8,-8,40]
+    [9,-9,41]
 ]
 DEFAULT_DEBUG_OUTPUT_DIR = Path("data/dexterous_debug_patch")
 
@@ -33,7 +33,7 @@ def _parse_points(text: str):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render local dexterous probes for the 3mm CSM configuration.")
-    parser.add_argument("--config", default="config/csm_cfg_3mm_1.yaml", help="Path to the 3mm CSM yaml config.")
+    parser.add_argument("--config", default="config/csm_cfg_3mm_2.yaml", help="Path to the 3mm CSM yaml config.")
     parser.add_argument(
         "--points-mm",
         default=str(DEFAULT_PROBES_MM),

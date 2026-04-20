@@ -523,6 +523,61 @@ def _extract_circular_slice(points: np.ndarray, start: int, end: int) -> np.ndar
     return np.vstack([points[start:], points[: end + 1]])
 
 
+def _snap_points_to_unit_circle(points: np.ndarray) -> np.ndarray:
+    pts = np.asarray(points, dtype=float).copy()
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        return pts
+    norms = np.linalg.norm(pts, axis=1)
+    safe = norms > 1e-12
+    pts[safe] /= norms[safe][:, None]
+    return pts
+
+
+def _outer_arc_mask(radii: np.ndarray, options: DexterousPlotOptions) -> np.ndarray:
+    rr = np.asarray(radii, dtype=float)
+    if rr.size == 0:
+        return np.zeros(0, dtype=bool)
+    max_radius = float(np.max(rr))
+    tol = float(options.hull_arc_tol)
+    # Robust outer-arc detection:
+    # 1) points already close to the unit circle
+    # 2) points close to the outermost observed hull radius, even if numerical
+    #    drift keeps them slightly inside the unit circle.
+    return (np.abs(rr - 1.0) <= tol) | (rr >= max_radius - tol)
+
+
+def _build_boundary_from_hull_arc(
+    arc_hull: np.ndarray,
+    poly_hull: np.ndarray,
+    options: DexterousPlotOptions,
+) -> np.ndarray:
+    arc = _snap_points_to_unit_circle(np.asarray(arc_hull, dtype=float))
+    poly = np.asarray(poly_hull, dtype=float)
+    if arc.shape[0] < 2 or poly.shape[0] < 2:
+        return np.zeros((0, 2), dtype=float)
+    keep_idx = _rdp_indices(poly, options.line_simplify_tol)
+    keep_idx = np.unique(keep_idx)
+    if keep_idx[0] != 0:
+        keep_idx = np.concatenate([[0], keep_idx])
+    if keep_idx[-1] != poly.shape[0] - 1:
+        keep_idx = np.concatenate([keep_idx, [poly.shape[0] - 1]])
+    poly_points = poly[keep_idx]
+    if poly_points.shape[0] < 2:
+        return np.zeros((0, 2), dtype=float)
+    arc_start = poly_points[-1]
+    arc_end = poly_points[0]
+    arc_start_norm = float(np.linalg.norm(arc_start))
+    arc_end_norm = float(np.linalg.norm(arc_end))
+    if arc_start_norm <= 1e-12 or arc_end_norm <= 1e-12:
+        return np.zeros((0, 2), dtype=float)
+    arc_points = _sample_unit_arc(
+        arc_start / arc_start_norm,
+        arc_end / arc_end_norm,
+        n_samples=max(64, arc.shape[0] * 12),
+    )
+    return np.vstack([arc_points, poly_points[1:-1], arc_points[:1]])
+
+
 def _family_param_values(family, points: np.ndarray) -> np.ndarray:
     pts = np.asarray(points, dtype=float)
     if family.primitive_type == "line":
@@ -768,7 +823,7 @@ def _build_patch_geometry_from_boundary_families(
     if hull_pts.shape[0] < 6:
         return {}
     radii = np.linalg.norm(hull_pts, axis=1)
-    arc_run = _longest_true_run(np.abs(radii - 1.0) <= options.hull_arc_tol)
+    arc_run = _longest_true_run(_outer_arc_mask(radii, options))
     if arc_run is None:
         return {}
     arc_start_idx, arc_end_idx = arc_run
@@ -776,13 +831,43 @@ def _build_patch_geometry_from_boundary_families(
     poly_hull = _extract_circular_slice(hull_pts, arc_end_idx, arc_start_idx)
     if arc_hull.shape[0] < 2 or poly_hull.shape[0] < 3:
         return {}
+    boundary_hull_fallback = _build_boundary_from_hull_arc(arc_hull, poly_hull, options)
     keep_idx = _rdp_indices(poly_hull, options.line_simplify_tol)
     keep_idx = np.unique(keep_idx)
-    if keep_idx[0] != 0:
-        keep_idx = np.concatenate([[0], keep_idx])
-    if keep_idx[-1] != poly_hull.shape[0] - 1:
-        keep_idx = np.concatenate([keep_idx, [poly_hull.shape[0] - 1]])
+
+    # 对于点数很少的情况，保留所有点，避免过度简化导致边界退化
+    if poly_hull.shape[0] <= 5:
+        keep_idx = np.arange(poly_hull.shape[0], dtype=int)
+    else:
+        if keep_idx[0] != 0:
+            keep_idx = np.concatenate([[0], keep_idx])
+        if keep_idx[-1] != poly_hull.shape[0] - 1:
+            keep_idx = np.concatenate([keep_idx, [poly_hull.shape[0] - 1]])
+
     if keep_idx.size < 3:
+        if boundary_hull_fallback.shape[0] >= 3:
+            boundary = boundary_hull_fallback
+            coverage = _polygon_coverage_fraction(boundary, feasible)
+            interior_stride = max(1, feasible.shape[0] // 2400)
+            vertices_2d, triangles = _triangulate_planar_region(boundary, feasible[::interior_stride])
+            vertices_3d_world, triangles_3d = _lift_patch_vertices_to_world(vertices_2d, triangles, float(probe.gamma))
+            if coverage < options.analytic_fill_min_coverage:
+                hull_geom = _build_patch_geometry_from_feasible_hull(probe, feasible)
+                if hull_geom:
+                    return hull_geom
+            return {
+                "mask": np.zeros((0, 0), dtype=bool),
+                "xs": np.array([], dtype=float),
+                "zs": np.array([], dtype=float),
+                "contour_raw": boundary,
+                "contour_smooth": boundary,
+                "vertices_2d": vertices_2d,
+                "triangles_2d": triangles,
+                "vertices_3d_world": vertices_3d_world,
+                "triangles": triangles_3d,
+                "method": "analytic_boundary",
+                "coverage": coverage,
+            }
         return {}
 
     segment_normals: list[np.ndarray] = []
@@ -795,12 +880,58 @@ def _build_patch_geometry_from_boundary_families(
         segment_normals.append(normal)
         segment_offsets.append(offset)
     if len(segment_normals) < 2:
+        if boundary_hull_fallback.shape[0] >= 3:
+            boundary = boundary_hull_fallback
+            coverage = _polygon_coverage_fraction(boundary, feasible)
+            interior_stride = max(1, feasible.shape[0] // 2400)
+            vertices_2d, triangles = _triangulate_planar_region(boundary, feasible[::interior_stride])
+            vertices_3d_world, triangles_3d = _lift_patch_vertices_to_world(vertices_2d, triangles, float(probe.gamma))
+            if coverage < options.analytic_fill_min_coverage:
+                hull_geom = _build_patch_geometry_from_feasible_hull(probe, feasible)
+                if hull_geom:
+                    return hull_geom
+            return {
+                "mask": np.zeros((0, 0), dtype=bool),
+                "xs": np.array([], dtype=float),
+                "zs": np.array([], dtype=float),
+                "contour_raw": boundary,
+                "contour_smooth": boundary,
+                "vertices_2d": vertices_2d,
+                "triangles_2d": triangles,
+                "vertices_3d_world": vertices_3d_world,
+                "triangles": triangles_3d,
+                "method": "analytic_boundary",
+                "coverage": coverage,
+            }
         return {}
 
     poly_vertices = []
     start_intersection = _intersect_line_unit_circle(segment_normals[0], segment_offsets[0], poly_hull[0])
     end_intersection = _intersect_line_unit_circle(segment_normals[-1], segment_offsets[-1], poly_hull[-1])
     if start_intersection is None or end_intersection is None:
+        if boundary_hull_fallback.shape[0] >= 3:
+            boundary = boundary_hull_fallback
+            coverage = _polygon_coverage_fraction(boundary, feasible)
+            interior_stride = max(1, feasible.shape[0] // 2400)
+            vertices_2d, triangles = _triangulate_planar_region(boundary, feasible[::interior_stride])
+            vertices_3d_world, triangles_3d = _lift_patch_vertices_to_world(vertices_2d, triangles, float(probe.gamma))
+            if coverage < options.analytic_fill_min_coverage:
+                hull_geom = _build_patch_geometry_from_feasible_hull(probe, feasible)
+                if hull_geom:
+                    return hull_geom
+            return {
+                "mask": np.zeros((0, 0), dtype=bool),
+                "xs": np.array([], dtype=float),
+                "zs": np.array([], dtype=float),
+                "contour_raw": boundary,
+                "contour_smooth": boundary,
+                "vertices_2d": vertices_2d,
+                "triangles_2d": triangles,
+                "vertices_3d_world": vertices_3d_world,
+                "triangles": triangles_3d,
+                "method": "analytic_boundary",
+                "coverage": coverage,
+            }
         return {}
     poly_vertices.append(start_intersection)
     for idx in range(len(segment_normals) - 1):
@@ -811,6 +942,29 @@ def _build_patch_geometry_from_boundary_families(
             segment_offsets[idx + 1],
         )
         if corner is None:
+            if boundary_hull_fallback.shape[0] >= 3:
+                boundary = boundary_hull_fallback
+                coverage = _polygon_coverage_fraction(boundary, feasible)
+                interior_stride = max(1, feasible.shape[0] // 2400)
+                vertices_2d, triangles = _triangulate_planar_region(boundary, feasible[::interior_stride])
+                vertices_3d_world, triangles_3d = _lift_patch_vertices_to_world(vertices_2d, triangles, float(probe.gamma))
+                if coverage < options.analytic_fill_min_coverage:
+                    hull_geom = _build_patch_geometry_from_feasible_hull(probe, feasible)
+                    if hull_geom:
+                        return hull_geom
+                return {
+                    "mask": np.zeros((0, 0), dtype=bool),
+                    "xs": np.array([], dtype=float),
+                    "zs": np.array([], dtype=float),
+                    "contour_raw": boundary,
+                    "contour_smooth": boundary,
+                    "vertices_2d": vertices_2d,
+                    "triangles_2d": triangles,
+                    "vertices_3d_world": vertices_3d_world,
+                    "triangles": triangles_3d,
+                    "method": "analytic_boundary",
+                    "coverage": coverage,
+                }
             return {}
         poly_vertices.append(corner)
     poly_vertices.append(end_intersection)

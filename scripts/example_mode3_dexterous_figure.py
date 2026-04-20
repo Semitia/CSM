@@ -52,8 +52,9 @@ MM_PER_M = 1000.0
 BOX_INFO_SCHEMA_VERSION = 1
 POSITION_SEED_RANDOM_SAMPLES = 2500
 DEFAULT_PANEL_TARGET_SPECS = [
-    ("Vertex (+1, -1, +1)", np.array([1.0, -1.0, 1.0], dtype=float), 20260411),
-    # ("Vertex (+1, -1, -1)", np.array([1.0, -1.0, -1.0], dtype=float), 20260411),
+    # ("Vertex (+1, -1, +1)", np.array([1.0, -1.0, 1.0], dtype=float), 20260412),
+    ("Vertex (+1, -1, -1)", np.array([1.0, 0.6, 1.0], dtype=float), 20260411),
+    # ("Vertex (0.18, -0.12, -0.10)", np.array([0.18, -0.12, -0.10], dtype=float), 20260411),
 ]
 
 
@@ -728,11 +729,13 @@ def _compute_shared_axes_limits(
     panels: list[PanelSolution],
     sphere_radius_m: float,
     style: FigureStyle,
+    include_robot: bool,
 ) -> tuple[float, float]:
     content: list[np.ndarray] = []
     for panel in panels:
         content.append(_collect_box_and_direction_points(box, panel, sphere_radius_m))
-        content.append(_collect_robot_points(csm, panel))
+        if include_robot:
+            content.append(_collect_robot_points(csm, panel))
     points = np.vstack([pts for pts in content if pts.size]) if any(pts.size for pts in content) else np.zeros((0, 3), dtype=float)
     if points.size == 0:
         points = np.zeros((1, 3), dtype=float)
@@ -775,6 +778,7 @@ def build_figure(
     top_margin_mm: float,
     output_path: Path | None,
     show_figure: bool,
+    show_arm: bool = True,
     box_override: OperationBox | None = None,
     box_scale_override: float | None = None,
     style: FigureStyle = DEFAULT_STYLE,
@@ -855,7 +859,7 @@ def build_figure(
     plot_options = DexterousPlotOptions(
         show_figure=False,
         display_frame="world",
-        show_robot=True,
+        show_robot=show_arm,
         sphere_alpha=style.sphere_alpha,
         patch_alpha=style.patch_alpha,
         sphere_color=style.sphere_color,
@@ -872,6 +876,7 @@ def build_figure(
         panels=solutions,
         sphere_radius_m=sphere_radius_m,
         style=style,
+        include_robot=show_arm,
     )
 
     for idx, (probe, solution) in enumerate(zip(probes, solutions), start=1):
@@ -926,11 +931,12 @@ def build_figure(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render a mode3 dexterous-workspace illustration.")
-    parser.add_argument("--config", default="config/csm_cfg_3mm_2.yaml", help="CSM config path.")
+    parser.add_argument("--config", default="config/csm_cfg_3mm_3.yaml", help="CSM config path.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output figure path.")
     parser.add_argument("--load-box-info", help="Optional JSON path exported by the translation script; reuses exactly the same box.")
     parser.add_argument("--box-size-mm", default="50,50,40", help="Operation box size in millimeters: sx,sy,sz.")
     parser.add_argument("--top-margin-mm", default=DEFAULT_TOP_MARGIN_MM, type=float, help="Top clearance to workspace roof.")
+    parser.add_argument("--hide-arm", action="store_true", help="Do not render the robot arm overlay.")
     parser.add_argument("--hide", action="store_true", help="Render without opening a window.")
     parser.add_argument("--timing", action="store_true", help="Print per-stage timing diagnostics.")
     args = parser.parse_args()
@@ -952,6 +958,7 @@ def main() -> None:
         top_margin_mm=float(args.top_margin_mm),
         output_path=Path(args.output),
         show_figure=not args.hide,
+        show_arm=not args.hide_arm,
         box_override=loaded_box,
         box_scale_override=loaded_box_scale,
         style=DEFAULT_STYLE,
