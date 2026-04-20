@@ -552,7 +552,7 @@ def build_figure(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render a mode3 translation-workspace illustration.")
-    parser.add_argument("--config", default="config/csm_cfg_3mm.yaml", help="CSM config path.")
+    parser.add_argument("--config", default="config/csm_cfg_3mm_3.yaml", help="CSM config path.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output figure path.")
     parser.add_argument("--save-box-info", help="Optional JSON path to save the fitted operation-box definition.")
     parser.add_argument("--box-size-mm", default="50,50,40", help="Operation box size in millimeters: sx,sy,sz.")

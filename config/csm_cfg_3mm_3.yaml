@@ -4,7 +4,7 @@ robot:  # 3.4mm臂体
   L_r0: 0.00668
   L_s0: 0.0
   L_tool: 0.0102
-  theta1_max: 4.1   # 180度
+  theta1_max: 4.7124   # 1.5π ≈ 270度 
   theta2_max: 1.5708   # 90度
   r1_min: 0.015475
   # r2_min: 0.0053

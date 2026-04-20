@@ -744,6 +744,15 @@ def _sample_mode3_theta1_curve(csm, L1, theta1_start, theta1_end, theta_2, angle
     return _sample_state_curve(csm, states)
 
 
+def _mode3_theta1_upper_bound(csm, L1):
+    if hasattr(csm, "max_theta1_for_length"):
+        return float(csm.max_theta1_for_length(L1))
+    # 使用物理曲率计算theta1的上限
+    physical_kappa = 1.0 / csm.r1_min if csm.r1_min > 1e-9 else csm.kappa_10
+    theta1_physical = physical_kappa * L1
+    return float(min(theta1_physical, csm.theta1_limit))
+
+
 def _sample_mode3_l1_curve(csm, theta_2, l1_start, l1_end, length_samples=240):
     states = []
     for L1 in np.linspace(l1_start, l1_end, length_samples):
@@ -754,11 +763,95 @@ def _sample_mode3_l1_curve(csm, theta_2, l1_start, l1_end, length_samples=240):
                 "L2": csm.L_20,
                 "Lr": csm.L_r0,
                 "Ls": 0.0,
-                "theta_1": min(csm.kappa_10 * L1, csm.theta1_limit),
+                "theta_1": _mode3_theta1_upper_bound(csm, L1),
                 "theta_2": theta_2,
             }
         )
     return _sample_state_curve(csm, states)
+
+
+def _check_theta1_constrained(csm):
+    """
+    检查theta1是否在L1达到max之前就受限。
+    返回 (is_constrained, L1_at_limit)
+    - is_constrained: True表示theta1_limit < 物理限制（L_10/r1_min）
+    - L1_at_limit: theta1达到limit时的L1值（如果受限）
+    """
+    # 物理限制：theta1最大可以达到 L_10 / r1_min
+    physical_limit = csm.L_10 / csm.r1_min if csm.r1_min > 1e-9 else float('inf')
+
+    # 如果theta1_limit < 物理限制，说明theta1受限
+    if csm.theta1_limit < physical_limit - 1e-6:
+        # theta1达到limit时的L1值，使用物理曲率
+        physical_kappa = 1.0 / csm.r1_min if csm.r1_min > 1e-9 else csm.kappa_10
+        L1_at_limit = csm.theta1_limit / physical_kappa
+        return True, L1_at_limit
+    return False, None
+
+
+def _compute_tau1_prime_direction(csm):
+    """
+    计算tau1'段（theta1保持在limit，L1继续增加）的极角方向。
+    返回极角（弧度），范围[0, 2π)。
+    """
+    # tau1'的方向就是 π - theta1_limit
+    direction = math.pi - csm.theta1_limit
+    return float(direction % (2.0 * math.pi))
+
+
+def _compute_curve_tangent_angles(curve_rz):
+    """
+    计算曲线上每个点的切线方向（极角）。
+    使用中心差分法计算切线。
+    返回：angles数组，长度与curve_rz相同
+    """
+    curve_rz = np.asarray(curve_rz, dtype=float)
+    n = len(curve_rz)
+    angles = np.zeros(n, dtype=float)
+
+    for i in range(n):
+        if i == 0:
+            # 起点：使用前向差分
+            dr = curve_rz[1, 0] - curve_rz[0, 0]
+            dz = curve_rz[1, 1] - curve_rz[0, 1]
+        elif i == n - 1:
+            # 终点：使用后向差分
+            dr = curve_rz[-1, 0] - curve_rz[-2, 0]
+            dz = curve_rz[-1, 1] - curve_rz[-2, 1]
+        else:
+            # 中间点：使用中心差分
+            dr = curve_rz[i + 1, 0] - curve_rz[i - 1, 0]
+            dz = curve_rz[i + 1, 1] - curve_rz[i - 1, 1]
+
+        # 计算极角
+        angles[i] = math.atan2(dz, dr)
+
+    return angles
+
+
+def _find_perpendicular_split_point(curve_rz, target_direction):
+    """
+    在曲线上找到切线方向与target_direction最接近垂直的点。
+
+    参数：
+        curve_rz: 曲线点 (N, 2)
+        target_direction: 目标方向的极角（弧度）
+
+    返回：
+        (best_idx, perpendicularity): 最佳索引和垂直度（0=完全垂直，π/2=完全平行）
+    """
+    tangent_angles = _compute_curve_tangent_angles(curve_rz)
+
+    # 计算每个点的切线与目标方向的夹角
+    angle_diffs = np.abs(tangent_angles - target_direction)
+    # 归一化到[0, π]
+    angle_diffs = np.minimum(angle_diffs, 2 * np.pi - angle_diffs)
+
+    # 垂直度 = |angle_diff - π/2|，越小越垂直
+    perpendicularity = np.abs(angle_diffs - 0.5 * np.pi)
+
+    best_idx = int(np.argmin(perpendicularity))
+    return best_idx, float(perpendicularity[best_idx])
 
 
 def _resolve_mode3_segment_roles(options: BoundaryScanOptions, primitive_names):
@@ -922,44 +1015,149 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
     options = options or BoundaryScanOptions()
     length_samples = options.length_samples
     angle_samples = options.angle_samples
-    primitives = {
-        "tau0": BoundaryPrimitive("tau0", _sample_mode3_theta2_curve(csm, L1=0.0, theta_1=0.0, theta_start=0.0, theta_end=csm.theta2_limit, angle_samples=angle_samples)),
-        "tau1": BoundaryPrimitive("tau1", _sample_mode3_l1_curve(csm, theta_2=csm.theta2_limit, l1_start=0.0, l1_end=csm.L_10, length_samples=length_samples)),
-        "tau2": BoundaryPrimitive("tau2", _sample_mode3_theta2_curve(csm, L1=csm.L_10, theta_1=csm.theta1_limit, theta_start=csm.theta2_limit, theta_end=0.0, angle_samples=angle_samples)),
-        "tau3": BoundaryPrimitive("tau3", _sample_mode3_theta1_curve(csm, L1=csm.L_10, theta1_start=csm.theta1_limit, theta1_end=0.0, theta_2=0.0, angle_samples=angle_samples)),
-    }
-    segment_roles = _resolve_mode3_segment_roles(options, primitives.keys())
+
+    # 检查theta1是否受限
+    is_theta1_constrained, L1_at_theta1_limit = _check_theta1_constrained(csm)
+
+    if is_theta1_constrained:
+        # theta1受限情况：需要重新组织tau段
+        # 正确的顺序：tau1 → tau2 → tau1' → tau2' → tau3
+        # tau1在theta1达到limit时结束，然后画tau2直到垂直于tau1'，
+        # 然后画tau1'（水平直线），然后画tau2'，最后tau3
+
+        tau1_prime_angle = _compute_tau1_prime_direction(csm)  # tau1'的极角方向
+
+        # 生成原始的tau段
+        tau0_full = _sample_mode3_theta2_curve(csm, L1=0.0, theta_1=0.0, theta_start=0.0, theta_end=csm.theta2_limit, angle_samples=angle_samples)
+
+        # tau1: L1从0到theta1达到limit，theta2保持在max
+        tau1_full = _sample_mode3_l1_curve(csm, theta_2=csm.theta2_limit, l1_start=0.0, l1_end=L1_at_theta1_limit, length_samples=length_samples)
+
+        # tau2完整段：从(L1=L1_at_limit, theta1=limit, theta2=max)开始，减小theta2到0
+        tau2_full = _sample_mode3_theta2_curve(csm, L1=L1_at_theta1_limit, theta_1=csm.theta1_limit,
+                                               theta_start=csm.theta2_limit, theta_end=0.0, angle_samples=angle_samples)
+
+        # tau1': L1从L1_at_limit继续增长到max，theta1保持在limit，theta2保持在某个值
+        # 这个theta2值取决于tau2切分点
+
+        # 在tau2上找到与tau1'最接近垂直的点
+        split_idx, perpendicularity = _find_perpendicular_split_point(tau2_full, tau1_prime_angle)
+
+        # 判断切分点位置
+        threshold = 5
+        at_start = split_idx < threshold  # 切分点在起点附近
+        at_end = split_idx >= len(tau2_full) - threshold  # 切分点在终点附近
+
+        if at_end:
+            # 切分点在theta2=0附近，说明tau2全程都在接近垂直
+            # tau2 = 完整的tau2，tau2' = 空
+            # tau1'应该在theta2=0时画
+            tau2_part = tau2_full
+            tau2_prime_part = np.empty((0, 2), dtype=float)
+            theta2_for_tau1_prime = 0.0
+        elif at_start:
+            # 切分点在theta2=max附近，说明tau2起点就已经垂直
+            # tau2 = 空，tau2' = 完整的tau2
+            # tau1'应该在theta2=max时画
+            tau2_part = np.empty((0, 2), dtype=float)
+            tau2_prime_part = tau2_full
+            theta2_for_tau1_prime = csm.theta2_limit
+        else:
+            # 切分点在中间
+            tau2_part = tau2_full[:split_idx + 1]
+            tau2_prime_part = tau2_full[split_idx:]
+            # 计算切分点对应的theta2值
+            theta2_values = np.linspace(csm.theta2_limit, 0.0, len(tau2_full))
+            theta2_for_tau1_prime = theta2_values[split_idx]
+
+        # 生成tau1'：从L1_at_limit到L_10，theta2保持在切分点的值
+        tau1_prime_full = _sample_mode3_l1_curve(csm, theta_2=theta2_for_tau1_prime,
+                                                 l1_start=L1_at_theta1_limit, l1_end=csm.L_10,
+                                                 length_samples=length_samples)
+
+        # tau3: 从(L1=max, theta1=limit, theta2=theta2_for_tau1_prime)开始
+        tau3_full = _sample_mode3_theta1_curve(csm, L1=csm.L_10, theta1_start=csm.theta1_limit,
+                                               theta1_end=0.0, theta_2=theta2_for_tau1_prime,
+                                               angle_samples=angle_samples)
+
+        # 组织primitives
+        primitives = {
+            "tau0": BoundaryPrimitive("tau0", tau0_full),
+            "tau1": BoundaryPrimitive("tau1", tau1_full),
+        }
+        segment_roles = {
+            "tau0": "inner",
+            "tau1": "inner",
+        }
+
+        outer_segments_list = []
+
+        if len(tau2_part) > 0:
+            primitives["tau2"] = BoundaryPrimitive("tau2", tau2_part)
+            segment_roles["tau2"] = "outer"
+            outer_segments_list.append(primitives["tau2"].points_rz)
+
+        primitives["tau1_prime"] = BoundaryPrimitive("tau1_prime", tau1_prime_full)
+        segment_roles["tau1_prime"] = "outer"
+        outer_segments_list.append(primitives["tau1_prime"].points_rz)
+
+        if len(tau2_prime_part) > 0:
+            primitives["tau2_prime"] = BoundaryPrimitive("tau2_prime", tau2_prime_part)
+            segment_roles["tau2_prime"] = "outer"
+            outer_segments_list.append(primitives["tau2_prime"].points_rz)
+
+        primitives["tau3"] = BoundaryPrimitive("tau3", tau3_full)
+        segment_roles["tau3"] = "outer"
+        outer_segments_list.append(primitives["tau3"].points_rz)
+
+        # 应用用户手动指定的segment roles（如果有）
+        segment_roles = _resolve_mode3_segment_roles(options, primitives.keys())
+
+        base_outer_segments = outer_segments_list
+    else:
+        # 原始逻辑：theta1不受限
+        primitives = {
+            "tau0": BoundaryPrimitive("tau0", _sample_mode3_theta2_curve(csm, L1=0.0, theta_1=0.0, theta_start=0.0, theta_end=csm.theta2_limit, angle_samples=angle_samples)),
+            "tau1": BoundaryPrimitive("tau1", _sample_mode3_l1_curve(csm, theta_2=csm.theta2_limit, l1_start=0.0, l1_end=csm.L_10, length_samples=length_samples)),
+            "tau2": BoundaryPrimitive("tau2", _sample_mode3_theta2_curve(csm, L1=csm.L_10, theta_1=csm.theta1_limit, theta_start=csm.theta2_limit, theta_end=0.0, angle_samples=angle_samples)),
+            "tau3": BoundaryPrimitive("tau3", _sample_mode3_theta1_curve(csm, L1=csm.L_10, theta1_start=csm.theta1_limit, theta1_end=0.0, theta_2=0.0, angle_samples=angle_samples)),
+        }
+        segment_roles = _resolve_mode3_segment_roles(options, primitives.keys())
+        base_outer_segments = [primitives["tau2"].points_rz, primitives["tau3"].points_rz]
 
     base_inner_segments = [primitives["tau0"].points_rz, primitives["tau1"].points_rz]
-    base_outer_segments = [primitives["tau2"].points_rz, primitives["tau3"].points_rz]
+    # base_outer_segments已经在上面的分支中设置好了
+
     candidate_segments = [
-        (name, f"{role}_candidate", primitives[name].points_rz.copy())
-        for name, role in segment_roles.items()
+        (name, f"{segment_roles[name]}_candidate", primitives[name].points_rz.copy())
+        for name in primitives.keys()
     ]
     discarded_segments = []
     overlap_hits = {}
     chosen_hit_name = None
     chosen_hit = None
-    chosen_profile_mode = "default"
+    chosen_profile_mode = "theta1_constrained" if is_theta1_constrained else "default"
     manual_role_override_active = bool(options.mode3_segment_roles)
 
-    hit_tau1_tau2 = _first_polyline_intersection(primitives["tau1"].points_rz, primitives["tau2"].points_rz)
-    if (
-        not _split_is_shared_endpoint(hit_tau1_tau2, primitives["tau1"].points_rz, primitives["tau2"].points_rz)
-        and _split_is_interior(hit_tau1_tau2, primitives["tau1"].points_rz, which="a")
-        and _split_is_interior(hit_tau1_tau2, primitives["tau2"].points_rz, which="b")
-    ):
-        overlap_hits["tau1_tau2"] = hit_tau1_tau2
+    # 如果theta1受限，跳过overlap检测，直接使用新的段组织
+    if not is_theta1_constrained:
+        hit_tau1_tau2 = _first_polyline_intersection(primitives["tau1"].points_rz, primitives["tau2"].points_rz)
+        if (
+            not _split_is_shared_endpoint(hit_tau1_tau2, primitives["tau1"].points_rz, primitives["tau2"].points_rz)
+            and _split_is_interior(hit_tau1_tau2, primitives["tau1"].points_rz, which="a")
+            and _split_is_interior(hit_tau1_tau2, primitives["tau2"].points_rz, which="b")
+        ):
+            overlap_hits["tau1_tau2"] = hit_tau1_tau2
 
-    hit_tau1_tau3 = _first_polyline_intersection(primitives["tau1"].points_rz, primitives["tau3"].points_rz)
-    if (
-        not _split_is_shared_endpoint(hit_tau1_tau3, primitives["tau1"].points_rz, primitives["tau3"].points_rz)
-        and _split_is_interior(hit_tau1_tau3, primitives["tau1"].points_rz, which="a")
-        and _split_is_interior(hit_tau1_tau3, primitives["tau3"].points_rz, which="b")
-    ):
-        overlap_hits["tau1_tau3"] = hit_tau1_tau3
+        hit_tau1_tau3 = _first_polyline_intersection(primitives["tau1"].points_rz, primitives["tau3"].points_rz)
+        if (
+            not _split_is_shared_endpoint(hit_tau1_tau3, primitives["tau1"].points_rz, primitives["tau3"].points_rz)
+            and _split_is_interior(hit_tau1_tau3, primitives["tau1"].points_rz, which="a")
+            and _split_is_interior(hit_tau1_tau3, primitives["tau3"].points_rz, which="b")
+        ):
+            overlap_hits["tau1_tau3"] = hit_tau1_tau3
 
-    if manual_role_override_active:
+    if manual_role_override_active and not is_theta1_constrained:
         inner_segments = [
             primitives[name].points_rz.copy()
             for name in primitives
@@ -971,6 +1169,19 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
             if segment_roles[name] == "outer"
         ]
         chosen_profile_mode = "manual_segment_roles"
+    elif manual_role_override_active and is_theta1_constrained:
+        # theta1受限情况下，也支持手动角色覆盖
+        inner_segments = [
+            primitives[name].points_rz.copy()
+            for name in primitives
+            if segment_roles[name] == "inner"
+        ]
+        outer_segments = [
+            primitives[name].points_rz.copy()
+            for name in primitives
+            if segment_roles[name] == "outer"
+        ]
+        chosen_profile_mode = "theta1_constrained_manual_roles"
     else:
         inner_segments = [segment.copy() for segment in base_inner_segments]
         outer_segments = [segment.copy() for segment in base_outer_segments]
@@ -980,7 +1191,7 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
     if not outer_segments:
         raise ValueError("Mode3 requires at least one outer segment after applying mode3_segment_roles.")
 
-    if (not manual_role_override_active) and options.mode3_overlap_resolution_enabled and overlap_hits:
+    if (not manual_role_override_active) and (not is_theta1_constrained) and options.mode3_overlap_resolution_enabled and overlap_hits:
         chosen_hit_name, chosen_hit = min(
             overlap_hits.items(),
             key=lambda item: (
@@ -1334,7 +1545,7 @@ def _mode3_l1_states(csm, theta_2, l1_start, l1_end, length_samples):
             L2=csm.L_20,
             Lr=csm.L_r0,
             Ls=0.0,
-            theta_1=min(csm.kappa_10 * L1, csm.theta1_limit),
+            theta_1=_mode3_theta1_upper_bound(csm, L1),
             theta_2=theta_2,
         )
         for L1 in np.linspace(l1_start, l1_end, length_samples)

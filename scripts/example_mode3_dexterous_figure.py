@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import time
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -118,14 +119,24 @@ def _csm_signature(csm: CSM) -> dict[str, float]:
 
 def _assert_matching_csm_signature(csm: CSM, saved_signature: dict[str, object]) -> None:
     current = _csm_signature(csm)
+    mismatches: list[str] = []
     for key, current_value in current.items():
         saved_value = saved_signature.get(key)
         if saved_value is None and current_value is None:
             continue
         if saved_value is None or current_value is None:
-            raise ValueError(f"Box info mismatch for {key}: saved={saved_value}, current={current_value}")
+            mismatches.append(f"{key}: saved={saved_value}, current={current_value}")
+            continue
         if abs(float(saved_value) - float(current_value)) > 1e-9:
-            raise ValueError(f"Box info mismatch for {key}: saved={saved_value}, current={current_value}")
+            mismatches.append(f"{key}: saved={saved_value}, current={current_value}")
+    if mismatches:
+        mismatch_text = "; ".join(mismatches)
+        warnings.warn(
+            "Loaded box info was exported from a different CSM configuration. "
+            "Continuing with the saved box anyway. "
+            f"Mismatches: {mismatch_text}",
+            stacklevel=2,
+        )
 
 
 def _load_box_info(path: Path, *, csm: CSM) -> tuple[OperationBox, float]:

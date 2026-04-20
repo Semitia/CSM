@@ -307,3 +307,69 @@ def plot_workspace_profiles(profiles, options: BoundaryScanPlotOptions | None = 
     if options.show_figure and has_interactive_display():
         plt.show()
     return fig
+
+
+def plot_mode3_primitives_debug(profile, output_path=None, show_figure=False):
+    """
+    绘制mode3的primitives debug图，用于调试theta1受限情况下的段切分。
+
+    参数：
+        profile: WorkspaceProfile对象
+        output_path: 输出路径（可选）
+        show_figure: 是否显示图像
+    """
+    if profile.mode != 3:
+        print(f"Warning: plot_mode3_primitives_debug only supports mode 3, got mode {profile.mode}")
+        return None
+
+    if not profile.debug_data or 'primitives' not in profile.debug_data:
+        print("Warning: No primitives data in profile.debug_data")
+        return None
+
+    primitives = profile.debug_data['primitives']
+    colors = {
+        'tau0': '#1f77b4',      # 蓝色
+        'tau1': '#2ca02c',      # 绿色
+        'tau2': '#d62728',      # 红色
+        'tau1_prime': '#ff7f0e', # 橙色
+        'tau2_prime': '#9467bd', # 紫色
+        'tau3': '#8c564b',      # 棕色
+    }
+
+    fig, ax = plt.subplots(figsize=(12, 9))
+
+    # 绘制primitives
+    for name, points in primitives.items():
+        color = colors.get(name, 'gray')
+        ax.plot(points[:, 0], points[:, 1], '-', color=color,
+                linewidth=2.5, label=name, alpha=0.8)
+        ax.plot(-points[:, 0], points[:, 1], '-', color=color,
+                linewidth=2.5, alpha=0.8)
+
+    # 添加参考线
+    ax.axhline(y=0, color='k', linestyle='--', alpha=0.3, linewidth=1)
+    ax.axvline(x=0, color='k', linestyle='--', alpha=0.3, linewidth=1)
+
+    ax.set_xlabel('Radius [m]', fontsize=12)
+    ax.set_ylabel('Z [m]', fontsize=12)
+
+    # 添加标题，显示profile mode
+    profile_mode = profile.debug_data.get('chosen_profile_mode', 'unknown')
+    ax.set_title(f'Mode 3 Primitives (profile_mode: {profile_mode})', fontsize=14, fontweight='bold')
+
+    ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
+    ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
+    ax.set_aspect('equal')
+
+    fig.tight_layout()
+
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"Mode 3 primitives debug图已保存到: {output_path}")
+
+    if show_figure and has_interactive_display():
+        plt.show()
+
+    return fig

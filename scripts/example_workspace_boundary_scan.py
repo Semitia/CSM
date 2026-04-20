@@ -34,8 +34,7 @@ MODE3_SEGMENT_ROLES = {
 
 
 def main():
-    print("[workspace_boundary_scan] Loading CSM config: ./config/csm_cfg_3mm_2.yaml")
-    csm = CSM.from_config(Path("./config/csm_cfg_3mm.yaml"))
+    csm = CSM.from_config(Path("./config/csm_cfg_3mm_2.yaml"))
     modes = [3]
     scan_options = BoundaryScanOptions(
         length_samples=180,

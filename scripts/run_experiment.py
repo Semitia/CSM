@@ -26,7 +26,7 @@ if __name__ == "__main__":
     successes = []
     delta_t = 0.001
 
-    config_path = Path("./config/csm_config_3.4mm.yaml")
+    config_path = Path("./config/csm_config_3mm.yaml")
     
     # Set defaults
     v_lim = 0.2

@@ -27,6 +27,7 @@ from .plotting import (
     BoundaryScanPlotOptions,
     has_interactive_display,
     plot_workspace_profiles,
+    plot_mode3_primitives_debug,
 )
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "build_workspace_profiles",
     "has_interactive_display",
     "plot_workspace_profiles",
+    "plot_mode3_primitives_debug",
     "render_workspace_scan_animation",
     "symmetric_fill_polygon",
 ]
