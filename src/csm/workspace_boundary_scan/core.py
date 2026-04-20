@@ -63,6 +63,7 @@ class BoundaryScanOptions:
     length_samples: int = 240
     angle_samples: int = 240
     mode3_overlap_resolution_enabled: bool = True
+    mode3_segment_roles: dict[str, str] = field(default_factory=dict)
     mode0_node_merge_tol: float = 2.0e-4
     mode0_endpoint_snap_tol: float = 3.0e-4
     mode0_route_length_samples: int = 72
@@ -760,6 +761,21 @@ def _sample_mode3_l1_curve(csm, theta_2, l1_start, l1_end, length_samples=240):
     return _sample_state_curve(csm, states)
 
 
+def _resolve_mode3_segment_roles(options: BoundaryScanOptions, primitive_names):
+    roles = {name: ("inner" if name in {"tau0", "tau1"} else "outer") for name in primitive_names}
+    for name, role in options.mode3_segment_roles.items():
+        if name not in roles:
+            valid = ", ".join(sorted(roles))
+            raise ValueError(f"Unknown mode3 segment '{name}'. Expected one of: {valid}")
+        normalized = str(role).strip().lower()
+        if normalized not in {"inner", "outer"}:
+            raise ValueError(
+                f"Invalid role '{role}' for mode3 segment '{name}'. Expected 'inner' or 'outer'."
+            )
+        roles[name] = normalized
+    return roles
+
+
 def _sample_mode4_theta1_curve(csm, Ls, theta1_start, theta1_end, theta_2, angle_samples=240):
     states = []
     for theta_1 in np.linspace(theta1_start, theta1_end, angle_samples):
@@ -912,20 +928,20 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
         "tau2": BoundaryPrimitive("tau2", _sample_mode3_theta2_curve(csm, L1=csm.L_10, theta_1=csm.theta1_limit, theta_start=csm.theta2_limit, theta_end=0.0, angle_samples=angle_samples)),
         "tau3": BoundaryPrimitive("tau3", _sample_mode3_theta1_curve(csm, L1=csm.L_10, theta1_start=csm.theta1_limit, theta1_end=0.0, theta_2=0.0, angle_samples=angle_samples)),
     }
+    segment_roles = _resolve_mode3_segment_roles(options, primitives.keys())
 
     base_inner_segments = [primitives["tau0"].points_rz, primitives["tau1"].points_rz]
     base_outer_segments = [primitives["tau2"].points_rz, primitives["tau3"].points_rz]
     candidate_segments = [
-        ("tau0", "inner_candidate", primitives["tau0"].points_rz.copy()),
-        ("tau1", "inner_candidate", primitives["tau1"].points_rz.copy()),
-        ("tau2", "outer_candidate", primitives["tau2"].points_rz.copy()),
-        ("tau3", "outer_candidate", primitives["tau3"].points_rz.copy()),
+        (name, f"{role}_candidate", primitives[name].points_rz.copy())
+        for name, role in segment_roles.items()
     ]
     discarded_segments = []
     overlap_hits = {}
     chosen_hit_name = None
     chosen_hit = None
     chosen_profile_mode = "default"
+    manual_role_override_active = bool(options.mode3_segment_roles)
 
     hit_tau1_tau2 = _first_polyline_intersection(primitives["tau1"].points_rz, primitives["tau2"].points_rz)
     if (
@@ -943,9 +959,28 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
     ):
         overlap_hits["tau1_tau3"] = hit_tau1_tau3
 
-    inner_segments = [segment.copy() for segment in base_inner_segments]
-    outer_segments = [segment.copy() for segment in base_outer_segments]
-    if options.mode3_overlap_resolution_enabled and overlap_hits:
+    if manual_role_override_active:
+        inner_segments = [
+            primitives[name].points_rz.copy()
+            for name in primitives
+            if segment_roles[name] == "inner"
+        ]
+        outer_segments = [
+            primitives[name].points_rz.copy()
+            for name in primitives
+            if segment_roles[name] == "outer"
+        ]
+        chosen_profile_mode = "manual_segment_roles"
+    else:
+        inner_segments = [segment.copy() for segment in base_inner_segments]
+        outer_segments = [segment.copy() for segment in base_outer_segments]
+
+    if not inner_segments:
+        raise ValueError("Mode3 requires at least one inner segment after applying mode3_segment_roles.")
+    if not outer_segments:
+        raise ValueError("Mode3 requires at least one outer segment after applying mode3_segment_roles.")
+
+    if (not manual_role_override_active) and options.mode3_overlap_resolution_enabled and overlap_hits:
         chosen_hit_name, chosen_hit = min(
             overlap_hits.items(),
             key=lambda item: (
@@ -1001,6 +1036,8 @@ def build_mode3_profile(csm, options: BoundaryScanOptions | None = None):
             "chosen_hit_name": chosen_hit_name,
             "chosen_hit": None if chosen_hit is None else dict(chosen_hit),
             "chosen_profile_mode": chosen_profile_mode,
+            "segment_roles": dict(segment_roles),
+            "manual_role_override_active": manual_role_override_active,
         },
     )
 

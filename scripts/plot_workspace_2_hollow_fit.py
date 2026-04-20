@@ -1,23 +1,16 @@
 """
-Sampling + edge-fitting workspace plotter for large-bending hollow shells.
+Raw sample scatter plotter for the 3 mm configuration, mode 3.
 
-Compared with ``plot_workspace_2.py``, this variant still starts from directly
-sampled side-view points, but the profile extraction is changed:
-
-1. Rasterize sampled points into an R-Z occupancy grid
-2. Smooth and threshold the occupancy field
-3. For each Z row, detect contiguous radial occupied runs
-4. Use the outermost run to define the shell:
-   - outer contour = right edge of the outermost run
-   - inner contour = left edge of the outermost run when that run does not
-     touch the axis, or when there are multiple radial runs in the row
-
-This is intended for cases where the manipulator bends past the centerline and
-the side-view workspace should be interpreted as a hollow shell instead of a
-simple solid body with a single ``r_min / r_max`` envelope.
+This script only keeps:
+1. Config loading
+2. Sample-cache file interaction
+3. Sampling when cache is missing
+4. Raw side-view scatter plotting
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import sys
 
@@ -31,44 +24,39 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from csm.model import CSM
 from plot_workspace_2 import (
-    CONFIG_NAME,
-    CONFIG_PATH,
     FIGSIZE,
-    MODE_COLORS,
-    MODE_LABELS,
-    PROFILE_CURVE_SMOOTH_SIGMA,
-    PROFILE_R_BINS,
-    PROFILE_Z_BINS,
-    REVOLVE_SAMPLES,
-    SHOW_AXES,
-    SIDE_REAL_VIEW_AZIM,
-    SIDE_REAL_VIEW_ELEV,
-    UNREACHABLE_ALPHA,
-    UNREACHABLE_COLOR,
     _has_interactive_display,
-    plot_revolved_profile,
+    configure_side_view_axes,
+    draw_mode_side_scatter,
+    draw_mode_side_view,
+    overlay_profile_curves,
     sample_mode_side_points,
 )
-from csm.model import CSM
 
 
+CONFIG_NAME = "csm_cfg_3mm_2.yaml"
+CONFIG_PATH = Path("./config") / CONFIG_NAME
 PLOT_MODE = 3
+SAMPLE_CFG = {"length": 90, "theta1": 90, "theta2": 90}
 OUTPUT_PATH = Path("./data/plot_workspace_2_hollow_fit.png")
-
-# Sampling resolution follows the original script's philosophy.
-SAMPLE_CFG = {"length": 80, "theta1": 80, "theta2": 120}
-
-# Occupancy-grid extraction tuned for large-bending hollow shells.
-GRID_Z_BINS = 260
-GRID_R_BINS = 220
-GRID_SIGMA_Z = 1.25
-GRID_SIGMA_R = 1.0
-GLOBAL_OCC_THRESHOLD = 0.06
-ROW_OCC_THRESHOLD = 0.18
+CACHE_DIR = Path("./data/profile_cache")
+GRID_Z_BINS = 280
+GRID_R_BINS = 260
+GRID_SIGMA_Z = 1.35
+GRID_SIGMA_R = 1.1
+GLOBAL_OCC_THRESHOLD = 0.055
+ROW_OCC_THRESHOLD = 0.17
 MIN_ROW_RUN_BINS = 3
-MIN_INNER_VALID_ROWS = 8
-CURVE_UPSAMPLE_FACTOR = 5
+OUTER_MIN_ROWS = 12
+INNER_MIN_ROWS = 18
+OUTER_ROW_QUANTILE = 0.995
+CURVE_SMOOTH_SIGMA_OUTER = 3.2
+CURVE_SMOOTH_SIGMA_INNER = 1.6
+AXIS_NOISE_R = 0.0045
+INNER_BOTTOM_FLAT_MAX_BINS = 20
+TOP_ARC_MAX_EXTEND_BINS = 24
 
 
 def _find_true_runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -85,52 +73,129 @@ def _find_true_runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return runs
 
 
-def _keep_longest_run(mask: np.ndarray, weights: np.ndarray | None = None, min_len: int = 1) -> np.ndarray:
+def _keep_longest_run(mask: np.ndarray, weights: np.ndarray, min_len: int) -> np.ndarray:
     mask = np.asarray(mask, dtype=bool)
-    if not np.any(mask):
-        return np.zeros_like(mask, dtype=bool)
-
-    runs = _find_true_runs(mask)
-    if not runs:
-        return np.zeros_like(mask, dtype=bool)
-
+    weights = np.asarray(weights, dtype=float)
+    keep = np.zeros_like(mask, dtype=bool)
     best = None
     best_score = -np.inf
-    for start, end in runs:
+    for start, end in _find_true_runs(mask):
         run_len = end - start + 1
         if run_len < min_len:
             continue
-        if weights is None:
-            score = float(run_len)
-        else:
-            score = float(np.sum(weights[start:end + 1]))
+        score = float(np.sum(weights[start:end + 1]))
         if score > best_score:
             best_score = score
             best = (start, end)
-
-    keep = np.zeros_like(mask, dtype=bool)
     if best is not None:
         keep[best[0]:best[1] + 1] = True
     return keep
 
 
-def _smooth_curve(z_vals: np.ndarray, r_vals: np.ndarray, sigma: float = 1.2, upsample_factor: int = 4):
+def _smooth_valid_curve(z_vals: np.ndarray, r_vals: np.ndarray, sigma: float) -> tuple[np.ndarray, np.ndarray]:
     z_vals = np.asarray(z_vals, dtype=float)
     r_vals = np.asarray(r_vals, dtype=float)
     if z_vals.size < 4:
         return z_vals, r_vals
-
-    dense_count = max(int(z_vals.size * upsample_factor), z_vals.size)
-    z_dense = np.linspace(z_vals[0], z_vals[-1], dense_count)
+    dense_count = max(240, int(z_vals.size * 4))
+    z_dense = np.linspace(float(z_vals[0]), float(z_vals[-1]), dense_count)
     r_dense = np.interp(z_dense, z_vals, r_vals)
-    if sigma > 0:
+    if sigma > 0.0:
         r_dense = gaussian_filter1d(r_dense, sigma=sigma, mode="nearest")
-    return z_dense, r_dense
+    return z_dense, np.maximum(r_dense, 0.0)
 
 
-def _build_hollow_profile_from_side_points(side_points: np.ndarray):
+def _estimate_dr_dz(z_vals: np.ndarray, r_vals: np.ndarray, at_end: bool = True):
+    z_vals = np.asarray(z_vals, dtype=float)
+    r_vals = np.asarray(r_vals, dtype=float)
+    if z_vals.size < 3 or r_vals.size != z_vals.size:
+        return None
+
+    sample_count = min(7, z_vals.size)
+    if at_end:
+        z_fit = z_vals[-sample_count:]
+        r_fit = r_vals[-sample_count:]
+    else:
+        z_fit = z_vals[:sample_count]
+        r_fit = r_vals[:sample_count]
+
+    dz = np.ptp(z_fit)
+    if dz <= 1e-12:
+        return None
+    return float(np.polyfit(z_fit, r_fit, deg=1)[0])
+
+
+def _append_axis_arc(z_vals: np.ndarray, r_vals: np.ndarray, max_extend_bins: int = TOP_ARC_MAX_EXTEND_BINS, arc_samples: int = 64):
+    z_vals = np.asarray(z_vals, dtype=float)
+    r_vals = np.asarray(r_vals, dtype=float)
+    if z_vals.size < 3 or r_vals.size != z_vals.size:
+        return z_vals, r_vals
+
+    slope = _estimate_dr_dz(z_vals, r_vals, at_end=True)
+    if slope is None or slope >= -1e-9:
+        return z_vals, r_vals
+
+    r_end = float(r_vals[-1])
+    z_end = float(z_vals[-1])
+    z_center = z_end + slope * r_end
+    radius = float(np.hypot(r_end, z_end - z_center))
+    if not np.isfinite(radius) or radius <= 0.0:
+        return z_vals, r_vals
+
+    z_axis = z_center + radius
+    if not np.isfinite(z_axis) or z_axis <= z_end:
+        return z_vals, r_vals
+
+    dz_med = float(np.median(np.diff(z_vals))) if z_vals.size >= 2 else 0.0
+    if dz_med > 0.0 and z_axis - z_end > max_extend_bins * dz_med:
+        return z_vals, r_vals
+
+    theta_end = float(np.arctan2(z_end - z_center, r_end))
+    theta_arc = np.linspace(theta_end, 0.5 * np.pi, arc_samples)
+    arc_r = radius * np.cos(theta_arc)
+    arc_z = z_center + radius * np.sin(theta_arc)
+    return np.concatenate([z_vals, arc_z[1:]]), np.concatenate([r_vals, arc_r[1:]])
+
+
+def _fit_upper_axis_arc(z_vals: np.ndarray, r_vals: np.ndarray, fit_samples: int = 9, arc_samples: int = 120, max_extra_ratio: float = 0.30):
+    z_vals = np.asarray(z_vals, dtype=float)
+    r_vals = np.asarray(r_vals, dtype=float)
+    if z_vals.size < 4 or r_vals.size != z_vals.size:
+        return z_vals, r_vals
+
+    sample_count = min(fit_samples, z_vals.size)
+    z_fit = z_vals[-sample_count:]
+    r_fit = r_vals[-sample_count:]
+    dz = np.ptp(z_fit)
+    if dz <= 1e-12:
+        return z_vals, r_vals
+
+    slope = float(np.polyfit(z_fit, r_fit, deg=1)[0])
+    if slope >= -1e-9:
+        return z_vals, r_vals
+
+    r_end = float(r_vals[-1])
+    z_end = float(z_vals[-1])
+    z_center = z_end + slope * r_end
+    radius = float(np.hypot(r_end, z_end - z_center))
+    if not np.isfinite(radius) or radius <= 0.0:
+        return z_vals, r_vals
+
+    z_axis = z_center + radius
+    z_span = float(np.max(z_vals) - np.min(z_vals))
+    if not np.isfinite(z_axis) or z_axis <= z_end or z_axis - z_end > max_extra_ratio * max(z_span, 1e-9):
+        return z_vals, r_vals
+
+    theta_end = float(np.arctan2(z_end - z_center, r_end))
+    theta_arc = np.linspace(theta_end, 0.5 * np.pi, arc_samples)
+    arc_r = radius * np.cos(theta_arc)
+    arc_z = z_center + radius * np.sin(theta_arc)
+    return np.concatenate([z_vals, arc_z[1:]]), np.concatenate([r_vals, arc_r[1:]])
+
+
+def _build_mode3_special_profile(side_points: np.ndarray):
     side_points = np.asarray(side_points, dtype=float)
-    if side_points.ndim != 2 or side_points.shape[0] < 16 or side_points.shape[1] != 2:
+    if side_points.ndim != 2 or side_points.shape[1] != 2 or side_points.shape[0] < 32:
         return None
 
     r = side_points[:, 0]
@@ -143,8 +208,14 @@ def _build_hollow_profile_from_side_points(side_points: np.ndarray):
 
     r_edges = np.linspace(0.0, r_max, GRID_R_BINS + 1)
     z_edges = np.linspace(z_min, z_max, GRID_Z_BINS + 1)
-    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
     z_centers = 0.5 * (z_edges[:-1] + z_edges[1:])
+    z_bin_idx = np.clip(np.digitize(z, z_edges) - 1, 0, GRID_Z_BINS - 1)
+
+    row_point_outer = np.full(z_centers.shape, np.nan, dtype=float)
+    for row_idx in range(GRID_Z_BINS):
+        row_points = r[z_bin_idx == row_idx]
+        if row_points.size > 0:
+            row_point_outer[row_idx] = float(np.quantile(row_points, OUTER_ROW_QUANTILE))
 
     hist, _, _ = np.histogram2d(z, r, bins=(z_edges, r_edges))
     if not np.any(hist > 0.0):
@@ -157,16 +228,15 @@ def _build_hollow_profile_from_side_points(side_points: np.ndarray):
 
     outer_r = np.full(z_centers.shape, np.nan, dtype=float)
     inner_r = np.full(z_centers.shape, np.nan, dtype=float)
-    run_count = np.zeros(z_centers.shape, dtype=int)
+    gap_strength = np.zeros(z_centers.shape, dtype=float)
 
-    for row_idx in range(occ.shape[0]):
-        row = occ[row_idx]
+    for row_idx, row in enumerate(occ):
         row_max = float(np.max(row))
         if row_max <= 0.0:
             continue
 
-        row_threshold = max(GLOBAL_OCC_THRESHOLD * global_max, ROW_OCC_THRESHOLD * row_max)
-        mask = row >= row_threshold
+        threshold = max(GLOBAL_OCC_THRESHOLD * global_max, ROW_OCC_THRESHOLD * row_max)
+        mask = row >= threshold
         if not np.any(mask):
             continue
 
@@ -175,205 +245,177 @@ def _build_hollow_profile_from_side_points(side_points: np.ndarray):
         if not runs:
             continue
 
-        run_count[row_idx] = len(runs)
-        outer_start, outer_end = runs[-1]
-        outer_r[row_idx] = float(r_edges[outer_end + 1])
+        shell_start, shell_end = runs[-1]
+        outer_here = float(r_edges[shell_end + 1])
+        if np.isfinite(row_point_outer[row_idx]):
+            outer_here = max(outer_here, float(row_point_outer[row_idx]))
+        inner_here = float(r_edges[shell_start])
+        outer_r[row_idx] = outer_here
 
-        touches_axis = outer_start <= 1
-        if len(runs) >= 2 or not touches_axis:
-            inner_r[row_idx] = float(r_edges[outer_start])
+        has_inner_gap = len(runs) >= 2 or inner_here > AXIS_NOISE_R
+        if has_inner_gap and inner_here < outer_here:
+            inner_r[row_idx] = inner_here
+            if len(runs) >= 2:
+                prev_end = runs[-2][1]
+                gap_strength[row_idx] = float(r_edges[shell_start] - r_edges[prev_end + 1])
+            else:
+                gap_strength[row_idx] = inner_here
 
     valid_outer = np.isfinite(outer_r)
-    if np.count_nonzero(valid_outer) < 6:
+    if np.count_nonzero(valid_outer) < OUTER_MIN_ROWS:
         return None
 
-    outer_keep = _keep_longest_run(valid_outer, weights=np.nan_to_num(outer_r, nan=0.0), min_len=6)
-    valid_outer &= outer_keep
-    outer_z = z_centers[valid_outer]
-    outer_r_vals = outer_r[valid_outer]
-    outer_z, outer_r_vals = _smooth_curve(
-        outer_z,
-        outer_r_vals,
-        sigma=max(1.0, 0.75 * PROFILE_CURVE_SMOOTH_SIGMA),
-        upsample_factor=CURVE_UPSAMPLE_FACTOR,
+    keep_outer = _keep_longest_run(valid_outer, np.nan_to_num(outer_r, nan=0.0), min_len=OUTER_MIN_ROWS)
+    valid_outer &= keep_outer
+    outer_first = int(np.flatnonzero(valid_outer)[0])
+    outer_last = int(np.flatnonzero(valid_outer)[-1])
+    outer_z_raw = z_centers[outer_first:outer_last + 1]
+    outer_raw = np.interp(
+        outer_z_raw,
+        z_centers[valid_outer],
+        outer_r[valid_outer],
     )
+    outer_z_raw = np.concatenate(([z_min], outer_z_raw))
+    outer_raw = np.concatenate(([outer_raw[0]], outer_raw))
+    outer_z, outer_vals = _smooth_valid_curve(outer_z_raw, outer_raw, CURVE_SMOOTH_SIGMA_OUTER)
+    outer_z, outer_vals = _fit_upper_axis_arc(outer_z, outer_vals)
+    outer_z, outer_vals = _append_axis_arc(outer_z, outer_vals)
 
     valid_inner = np.isfinite(inner_r)
-    if np.count_nonzero(valid_inner) >= MIN_INNER_VALID_ROWS:
-        inner_weights = np.nan_to_num(inner_r, nan=0.0) * np.maximum(run_count, 1)
-        inner_keep = _keep_longest_run(valid_inner, weights=inner_weights, min_len=MIN_INNER_VALID_ROWS)
-        valid_inner &= inner_keep
+    if np.count_nonzero(valid_inner) >= INNER_MIN_ROWS:
+        valid_inner = binary_closing(valid_inner, structure=np.ones(9, dtype=bool))
+        weights = np.nan_to_num(inner_r, nan=0.0) + 6.0 * gap_strength
+        keep_inner = _keep_longest_run(valid_inner, weights, min_len=INNER_MIN_ROWS)
+        valid_inner &= keep_inner
     else:
         valid_inner[:] = False
 
-    inner_z = None
-    inner_r_vals = None
-    if np.count_nonzero(valid_inner) >= MIN_INNER_VALID_ROWS:
-        inner_z = z_centers[valid_inner]
-        inner_r_vals = inner_r[valid_inner]
-        inner_z, inner_r_vals = _smooth_curve(
+    inner_curve = None
+    if np.count_nonzero(valid_inner) >= INNER_MIN_ROWS:
+        inner_idx = np.flatnonzero(valid_inner)
+        src_inner = np.isfinite(inner_r)
+        inner_z = z_centers[inner_idx[0]:inner_idx[-1] + 1]
+        inner_vals = np.interp(
             inner_z,
-            inner_r_vals,
-            sigma=max(0.8, 0.65 * PROFILE_CURVE_SMOOTH_SIGMA),
-            upsample_factor=CURVE_UPSAMPLE_FACTOR,
+            z_centers[src_inner],
+            inner_r[src_inner],
         )
-        inner_r_vals = np.clip(inner_r_vals, 0.0, None)
-        outer_on_inner = np.interp(inner_z, outer_z, outer_r_vals)
-        inner_r_vals = np.minimum(inner_r_vals, np.maximum(outer_on_inner - 1e-6, 0.0))
-        inner_r_vals[inner_r_vals < (r_max / max(GRID_R_BINS, 1))] = 0.0
-        keep = inner_r_vals > 0.0
-        if np.count_nonzero(keep) >= MIN_INNER_VALID_ROWS:
-            inner_z = inner_z[keep]
-            inner_r_vals = inner_r_vals[keep]
-        else:
-            inner_z = None
-            inner_r_vals = None
+        inner_z, inner_vals = _smooth_valid_curve(inner_z, inner_vals, CURVE_SMOOTH_SIGMA_INNER)
+        outer_on_inner = np.interp(inner_z, outer_z, outer_vals)
+        radial_margin = max(r_max / max(GRID_R_BINS, 1), 1e-6)
+        inner_vals = np.minimum(inner_vals, np.maximum(outer_on_inner - radial_margin, 0.0))
+        if inner_z.size >= 2:
+            dz_med = float(np.median(np.diff(inner_z)))
+            if inner_z[0] - z_min <= INNER_BOTTOM_FLAT_MAX_BINS * max(dz_med, 1e-9):
+                inner_z = np.concatenate(([z_min], inner_z))
+                inner_vals = np.concatenate(([inner_vals[0]], inner_vals))
+        keep = inner_vals > AXIS_NOISE_R
+        if np.count_nonzero(keep) >= INNER_MIN_ROWS:
+            inner_curve = (inner_z[keep], inner_vals[keep])
 
-    debug = {
-        "z_centers": z_centers,
-        "r_centers": r_centers,
-        "hist": hist,
-        "occ": occ,
-        "row_run_count": run_count,
-        "row_outer_r": outer_r,
-        "row_inner_r": inner_r,
+    profile = {
+        "z": outer_z,
+        "outer_r": outer_vals,
+        "inner_r": np.zeros_like(outer_z),
     }
+    if inner_curve is not None:
+        inner_z, inner_vals = inner_curve
+        profile["inner_r"] = np.interp(outer_z, inner_z, inner_vals, left=0.0, right=0.0)
+        profile["inner_r"] = np.minimum(profile["inner_r"], np.maximum(profile["outer_r"] - r_max / max(GRID_R_BINS, 1), 0.0))
+        profile["inner_r"][profile["inner_r"] <= AXIS_NOISE_R] = 0.0
+        nz = np.flatnonzero(profile["inner_r"] > 0.0)
+        if nz.size > 0:
+            first_nz = int(nz[0])
+            dz_med = float(np.median(np.diff(profile["z"]))) if profile["z"].size >= 2 else 0.0
+            if first_nz > 0 and profile["z"][first_nz] - profile["z"][0] <= INNER_BOTTOM_FLAT_MAX_BINS * max(dz_med, 1e-9):
+                profile["inner_r"][:first_nz + 1] = profile["inner_r"][first_nz]
+
+    return profile
+
+
+def _cache_file_path(mode: int) -> Path:
+    return CACHE_DIR / f"{Path(__file__).stem}_{CONFIG_PATH.stem}_mode{mode}_samples.npz"
+
+
+def _current_cache_metadata(mode: int) -> dict:
+    config_sha256 = None
+    if CONFIG_PATH.exists():
+        config_sha256 = hashlib.sha256(CONFIG_PATH.read_bytes()).hexdigest()
     return {
-        "outer_z": outer_z,
-        "outer_r": outer_r_vals,
-        "inner_z": inner_z,
-        "inner_r": inner_r_vals,
-        "debug": debug,
+        "config_name": CONFIG_NAME,
+        "config_path": str(CONFIG_PATH),
+        "config_sha256": config_sha256,
+        "mode": int(mode),
+        "sample_cfg": SAMPLE_CFG,
     }
 
 
-def _draw_side_view(ax, profile: dict, color: str, label: str):
-    outer_z = np.asarray(profile["outer_z"], dtype=float) * 1000.0
-    outer_r = np.asarray(profile["outer_r"], dtype=float) * 1000.0
-    ax.fill_betweenx(outer_z, -outer_r, outer_r, color=color, alpha=0.65, linewidth=0.0, label=label)
-    ax.plot(outer_r, outer_z, color=color, linewidth=1.6, alpha=0.95)
-    ax.plot(-outer_r, outer_z, color=color, linewidth=1.6, alpha=0.95)
+def _load_profile_cache(mode: int):
+    cache_path = _cache_file_path(mode)
+    if not cache_path.exists():
+        return None
 
-    inner_z = profile.get("inner_z")
-    inner_r = profile.get("inner_r")
-    if inner_z is not None and inner_r is not None:
-        inner_z_mm = np.asarray(inner_z, dtype=float) * 1000.0
-        inner_r_mm = np.asarray(inner_r, dtype=float) * 1000.0
-        ax.fill_betweenx(
-            inner_z_mm,
-            -inner_r_mm,
-            inner_r_mm,
-            color="white",
-            alpha=1.0,
-            linewidth=0.0,
-            zorder=3,
-        )
-        ax.plot(inner_r_mm, inner_z_mm, color=UNREACHABLE_COLOR, linewidth=1.2, alpha=0.95, zorder=4)
-        ax.plot(-inner_r_mm, inner_z_mm, color=UNREACHABLE_COLOR, linewidth=1.2, alpha=0.95, zorder=4)
+    with np.load(cache_path, allow_pickle=False) as payload:
+        if "metadata" not in payload or "side_points" not in payload:
+            return None
 
-    ax.set_xlabel("R (mm)")
-    ax.set_ylabel("Z (mm)")
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, alpha=0.25)
+        cached_meta = json.loads(str(payload["metadata"].item()))
+        current_meta = _current_cache_metadata(mode)
+        for key, value in current_meta.items():
+            if cached_meta.get(key) != value:
+                return None
+
+        return np.asarray(payload["side_points"], dtype=float)
 
 
-def _configure_3d_axes(ax, profile: dict):
-    outer_r = np.asarray(profile["outer_r"], dtype=float) * 1000.0
-    outer_z = np.asarray(profile["outer_z"], dtype=float) * 1000.0
-    curves = [(outer_r, outer_z)]
-
-    inner_z = profile.get("inner_z")
-    inner_r = profile.get("inner_r")
-    if inner_z is not None and inner_r is not None:
-        curves.append((np.asarray(inner_r, dtype=float) * 1000.0, np.asarray(inner_z, dtype=float) * 1000.0))
-
-    all_r = np.concatenate([curve_r for curve_r, _ in curves])
-    all_z = np.concatenate([curve_z for _, curve_z in curves])
-    r_max = float(np.max(all_r))
-    z_min = float(np.min(all_z))
-    z_max = float(np.max(all_z))
-    margin_r = max(2.0, 0.08 * r_max)
-    margin_z = max(2.0, 0.08 * max(z_max - z_min, 1.0))
-
-    ax.set_xlim(-(r_max + margin_r), r_max + margin_r)
-    ax.set_ylim(-(r_max + margin_r), r_max + margin_r)
-    ax.set_zlim(z_min - margin_z, z_max + margin_z)
-    ax.set_box_aspect((1.0, 1.0, max(z_max - z_min, 1e-6) / max(2.0 * r_max, 1e-6)))
-    ax.view_init(elev=SIDE_REAL_VIEW_ELEV + 18, azim=SIDE_REAL_VIEW_AZIM + 48)
-    ax.set_xlabel("X (mm)")
-    ax.set_ylabel("Y (mm)")
-    ax.set_zlabel("Z (mm)")
-    ax.grid(True, alpha=0.25)
-    if not SHOW_AXES:
-        ax.set_axis_off()
-
-
-def _draw_debug_rows(ax, profile: dict):
-    debug = profile["debug"]
-    z = np.asarray(debug["z_centers"], dtype=float) * 1000.0
-    outer_r = np.asarray(debug["row_outer_r"], dtype=float) * 1000.0
-    inner_r = np.asarray(debug["row_inner_r"], dtype=float) * 1000.0
-    row_runs = np.asarray(debug["row_run_count"], dtype=int)
-
-    valid_outer = np.isfinite(outer_r)
-    valid_inner = np.isfinite(inner_r)
-    if np.any(valid_outer):
-        ax.scatter(outer_r[valid_outer], z[valid_outer], s=10, color="#1F5D78", alpha=0.55, label="row outer edge")
-        ax.scatter(-outer_r[valid_outer], z[valid_outer], s=10, color="#1F5D78", alpha=0.55)
-    if np.any(valid_inner):
-        colors = np.where(row_runs[valid_inner] >= 2, "#8C5A2F", "#D79A6B")
-        ax.scatter(inner_r[valid_inner], z[valid_inner], s=10, c=colors, alpha=0.65, label="row inner edge")
-        ax.scatter(-inner_r[valid_inner], z[valid_inner], s=10, c=colors, alpha=0.65)
+def _save_profile_cache(mode: int, side_points):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = _cache_file_path(mode)
+    np.savez_compressed(
+        cache_path,
+        metadata=np.asarray(json.dumps(_current_cache_metadata(mode))),
+        side_points=np.asarray(side_points, dtype=float),
+    )
+    print(f"Mode {mode}: cached sampled points -> {cache_path.resolve()}")
 
 
 def main():
     print(f"Loading CSM config: {CONFIG_PATH}")
     csm = CSM.from_config(CONFIG_PATH)
 
-    print(f"Sampling side-view points for mode {PLOT_MODE} using direct sampling...")
-    side_points = sample_mode_side_points(csm, PLOT_MODE, SAMPLE_CFG)
-    profile = _build_hollow_profile_from_side_points(side_points)
+    side_points = _load_profile_cache(PLOT_MODE)
+    if side_points is not None:
+        print(f"Mode {PLOT_MODE}: loaded cached sampled points")
+    else:
+        print(f"Mode {PLOT_MODE}: sample cache not found, sampling now...")
+        side_points = sample_mode_side_points(csm, PLOT_MODE, SAMPLE_CFG)
+        _save_profile_cache(PLOT_MODE, side_points)
+
+    profile = _build_mode3_special_profile(side_points)
     if profile is None:
-        raise RuntimeError("Failed to build hollow-shell profile from sampled side-view points.")
+        raise RuntimeError("Failed to build specialized mode-3 profile from sampled points.")
 
-    color = MODE_COLORS.get(PLOT_MODE, "#9FD4EA")
-    label = MODE_LABELS.get(PLOT_MODE, f"Mode {PLOT_MODE}")
+    fig = plt.figure(figsize=FIGSIZE, constrained_layout=True)
+    grid = GridSpec(1, 2, figure=fig, width_ratios=[1.1, 1.0], wspace=0.20)
 
-    fig = plt.figure(figsize=FIGSIZE)
-    gs = GridSpec(2, 2, figure=fig, width_ratios=[1.75, 1.0], height_ratios=[1.0, 1.0], wspace=0.22, hspace=0.22)
+    ax_scatter = fig.add_subplot(grid[0, 0])
+    draw_mode_side_scatter(ax_scatter, side_points, PLOT_MODE)
+    overlay_profile_curves(ax_scatter, profile, PLOT_MODE)
+    configure_side_view_axes(
+        ax_scatter,
+        all_profiles=[profile],
+        sampled_points_by_mode={PLOT_MODE: side_points},
+    )
+    ax_scatter.set_title(f"Raw Scatter + Specialized Fit ({CONFIG_NAME}, mode {PLOT_MODE})")
 
-    ax3d = fig.add_subplot(gs[:, 0], projection="3d")
-    outer_z_mm = np.asarray(profile["outer_z"], dtype=float) * 1000.0
-    outer_r_mm = np.asarray(profile["outer_r"], dtype=float) * 1000.0
-    plot_revolved_profile(ax3d, outer_z_mm, outer_r_mm, color=color, alpha=0.34, label=label)
-
-    inner_z = profile.get("inner_z")
-    inner_r = profile.get("inner_r")
-    if inner_z is not None and inner_r is not None:
-        plot_revolved_profile(
-            ax3d,
-            np.asarray(inner_z, dtype=float) * 1000.0,
-            np.asarray(inner_r, dtype=float) * 1000.0,
-            color=UNREACHABLE_COLOR,
-            alpha=UNREACHABLE_ALPHA,
-            label="Inner shell",
-        )
-    _configure_3d_axes(ax3d, profile)
-    ax3d.set_title("Hollow Shell Workspace")
-    ax3d.legend(loc="upper right")
-
-    ax_side = fig.add_subplot(gs[0, 1])
-    _draw_side_view(ax_side, profile, color=color, label=label)
-    ax_side.set_title("Side View")
-
-    ax_debug = fig.add_subplot(gs[1, 1])
-    _draw_side_view(ax_debug, profile, color=color, label=label)
-    _draw_debug_rows(ax_debug, profile)
-    ax_debug.scatter(side_points[:, 0] * 1000.0, side_points[:, 1] * 1000.0, s=4, alpha=0.10, color=color)
-    ax_debug.scatter(-side_points[:, 0] * 1000.0, side_points[:, 1] * 1000.0, s=4, alpha=0.10, color=color)
-    ax_debug.set_title("Sample Scatter + Fitted Edges")
-
-    fig.suptitle(f"Sampling + Hollow-Shell Fit ({CONFIG_NAME}, mode {PLOT_MODE})", fontsize=14)
+    ax_fit = fig.add_subplot(grid[0, 1])
+    draw_mode_side_view(ax_fit, profile, PLOT_MODE)
+    configure_side_view_axes(
+        ax_fit,
+        all_profiles=[profile],
+        sampled_points_by_mode={PLOT_MODE: side_points},
+    )
+    ax_fit.set_title("Specialized Boundary Fit")
 
     if OUTPUT_PATH is not None:
         OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

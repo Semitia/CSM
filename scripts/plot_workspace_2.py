@@ -34,7 +34,7 @@ FORCE_REBUILD_CACHE = False
 MODE_SAMPLE_RES = {
     1: {"length": 220, "theta1": 1, "theta2": 240},
     2: {"length": 180, "theta1": 1, "theta2": 220},
-    3: {"length": 60, "theta1": 60, "theta2": 60},
+    3: {"length": 90, "theta1": 90, "theta2": 90},
     4: {"length": 90, "theta1": 90, "theta2": 90},
 }
 
